@@ -1,0 +1,28 @@
+rules_version = '2';
+
+// Kudukka security rules.
+// Only the two household Google accounts can read or write anything.
+// The real email addresses are pasted in the Firebase console (Firestore → Rules),
+// not kept in this public repository. Replace the two placeholders below when you paste.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isFamily() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email in ['SHA_EMAIL@gmail.com', 'SREE_EMAIL@gmail.com'];
+    }
+
+    match /households/{householdId} {
+      allow read, write: if isFamily();
+
+      match /{collection}/{docId} {
+        allow read, write: if isFamily();
+      }
+    }
+
+    // Everything else is closed.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
