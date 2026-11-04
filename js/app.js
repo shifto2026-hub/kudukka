@@ -134,9 +134,11 @@ function renderDenied() {
   return `<section class="welcome">
     <div class="welcome-pot small">${POT_LOGO}</div>
     <h1 class="h1">This Kudukka is private</h1>
-    <p class="muted center">${esc(S.user && S.user.email)} isn't one of the two accounts allowed into this household.</p>
+    <p class="muted center">Signed in as ${esc(S.user && S.user.email)}, but the household data didn't open.</p>
+    <p class="muted center small">If this is one of your two accounts, check that the Firestore rules are published with both email addresses, wait a minute, then try again.</p>
     <div class="grow"></div>
-    <button type="button" class="btn btn-primary btn-block" data-act="signout">Use a different Google account</button>
+    <button type="button" class="btn btn-primary btn-block" data-act="retry">Try again</button>
+    <button type="button" class="link" data-act="signout">Use a different Google account</button>
   </section>`;
 }
 
@@ -713,6 +715,11 @@ document.addEventListener('click', async (ev) => {
         S.signinError = "Sign-in didn't finish. Please try again.";
         render();
       });
+      break;
+    case 'retry':
+      S.denied = false; S.householdLoaded = false;
+      render();
+      startData();
       break;
     case 'signout':
       closeSheet();
