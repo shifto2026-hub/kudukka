@@ -16,6 +16,8 @@
   --radius: 24px;
   --serif: 'Cormorant Garamond', Georgia, serif;
   --sans: 'DM Sans', system-ui, -apple-system, sans-serif;
+  /* Money figures: clean sans with straight, evenly spaced digits (no decorative serif). */
+  --num: 'DM Sans', system-ui, -apple-system, sans-serif;
   --nav-h: 76px;
   color-scheme: light;
 }
@@ -149,8 +151,8 @@ input { font: inherit; color: inherit; }
 .card { background: var(--card); border: 1px solid var(--cream-2); border-radius: var(--radius); padding: 20px; display: flex; flex-direction: column; gap: 12px; }
 .card.tight { padding: 6px 14px; gap: 0; }
 .hero { gap: 10px; }
-.big { font-family: var(--serif); font-weight: 600; font-size: 54px; line-height: 1.02; margin-bottom: 4px; }
-.big-sm { font-family: var(--serif); font-weight: 600; font-size: 30px; line-height: 1.1; }
+.big { font-family: var(--num); font-weight: 600; font-size: 46px; line-height: 1.05; letter-spacing: -1px; margin-bottom: 4px; }
+.big-sm { font-family: var(--num); font-weight: 600; font-size: 25px; line-height: 1.15; letter-spacing: -0.5px; }
 .row-between { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 14px; }
 .bar { height: 12px; border-radius: 6px; background: var(--cream-2); display: flex; overflow: hidden; }
 .bar.thin { height: 8px; border-radius: 4px; margin-top: 6px; }
@@ -189,6 +191,7 @@ input { font: inherit; color: inherit; }
 .entry-title { font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .entry-sub { font-size: 12.5px; color: var(--quiet); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .entry-amt { font-weight: 600; font-size: 15px; text-align: right; white-space: nowrap; }
+.big, .big-sm, .amount, .pound, .calc-result, .entry-amt, .row-between b, .summary-line b { font-variant-numeric: lining-nums tabular-nums; }
 .entry-amt.pos { color: var(--olive); }
 .entry-amt.quiet { color: var(--quiet); }
 .entry-amt.neg { color: var(--danger); }
@@ -259,14 +262,14 @@ input { font: inherit; color: inherit; }
 input[type="date"].input { -webkit-appearance: none; appearance: none; }
 .amount-wrap { display: flex; align-items: center; gap: 4px; background: var(--card); border: 1px solid var(--cream-2); border-radius: 18px; padding: 0 16px; height: 68px; }
 .amount-wrap.small { height: 48px; border-radius: 14px; padding: 0 12px; }
-.pound { font-family: var(--serif); font-size: 30px; font-weight: 600; color: var(--quiet); }
+.pound { font-family: var(--num); font-size: 28px; font-weight: 600; color: var(--quiet); }
 .amount-wrap.small .pound { font-size: 20px; }
-.amount { border: 0; background: transparent; width: 100%; font-family: var(--serif); font-weight: 600; font-size: 34px; padding: 0; outline: none; min-width: 0; }
+.amount { border: 0; background: transparent; width: 100%; font-family: var(--num); font-weight: 600; font-size: 30px; letter-spacing: -0.5px; padding: 0; outline: none; min-width: 0; }
 .input.bare { border: 0; background: transparent; height: 46px; padding: 0; outline: none; }
 .ops-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .ops { display: flex; gap: 8px; }
 .op { width: 44px; height: 44px; border-radius: 12px; border: 1px solid var(--cream-2); background: var(--card); font-size: 20px; font-weight: 600; color: var(--rust); }
-.calc-result { font-family: var(--serif); font-size: 24px; font-weight: 600; color: var(--olive); }
+.calc-result { font-family: var(--num); font-size: 22px; font-weight: 600; color: var(--olive); }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chips.sub { padding-top: 4px; }
 .chip {
