@@ -24,6 +24,8 @@ const S = {
   txns: [],
   locked: PIN.hasPin(),
   pin: { stage: null, buffer: '', first: '', error: '' },
+  bioSupported: false,
+  bioTried: false,
   view: 'home',
   person: 'home',
   month: LS.get('month') || D.currentMonth(),
@@ -95,6 +97,11 @@ function render() {
   if (g !== 'app') {
     root.dataset.mode = g;
     root.innerHTML = renderGate(g);
+    // Offer Face ID straight away when the lock screen appears.
+    if (g === 'pin-unlock' && PIN.hasBio() && !S.bioTried) {
+      S.bioTried = true;
+      setTimeout(() => bioUnlock(false), 250);
+    }
     return;
   }
   if (root.dataset.mode !== 'app') {
@@ -176,6 +183,7 @@ function renderPin(g) {
     <div class="welcome-pot small">${POT_LOGO}</div>
     <h1 class="h1">${title}</h1>
     <p class="muted">${sub}</p>
+    ${st.stage === 'unlock' && PIN.hasBio() ? `<button type="button" class="btn btn-ghost bio-btn" data-act="bio-unlock">${icon('face', 22)} Unlock with ${PIN.bioName()}</button>` : ''}
     <div class="dots" aria-label="${st.buffer.length} of 4 digits entered">${dots}</div>
     <p class="err">${esc(st.error)}</p>
     <div class="keypad">${keys}</div>
@@ -208,6 +216,21 @@ async function pinKey(k) {
     st.buffer = ''; st.error = 'Wrong PIN';
   }
   render();
+}
+
+async function bioUnlock(byTap) {
+  try {
+    if (await PIN.unlockWithBio()) {
+      S.pin = { stage: null, buffer: '', first: '', error: '' };
+      S.locked = false;
+      render();
+      return;
+    }
+  } catch (e) {
+    // Without a tap, iPhone may refuse to show Face ID; the button is there for that.
+    if (!byTap) return;
+  }
+  if (byTap && S.locked) { S.pin.error = `${PIN.bioName()} didn't work. Use your PIN.`; render(); }
 }
 
 // ---------- shared bits ----------
@@ -398,6 +421,7 @@ function viewMore() {
       <div class="me">${avatar(role, 52)}<div><b>${D.PEOPLE[role].name}</b><span class="muted small block">${esc(S.user.email)}</span></div></div>
     </section>
     <ul class="entries card tight">
+      ${S.bioSupported ? `<li><button type="button" class="entry" data-act="bio-toggle" aria-pressed="${PIN.hasBio()}"><span class="gicon plain">${icon('face', 18)}</span><span class="entry-main"><span class="entry-title">Unlock with ${PIN.bioName()}</span><span class="entry-sub">${PIN.hasBio() ? 'On · PIN still works too' : 'Off · tap to turn on'}</span></span><span class="switch${PIN.hasBio() ? ' on' : ''}" aria-hidden="true"></span></button></li>` : ''}
       <li><button type="button" class="entry" data-act="change-pin"><span class="gicon plain">${icon('key', 18)}</span><span class="entry-main"><span class="entry-title">Change PIN</span></span>${icon('right', 18)}</button></li>
       <li><button type="button" class="entry" data-act="lock"><span class="gicon plain">${icon('lock', 18)}</span><span class="entry-main"><span class="entry-title">Lock now</span></span>${icon('right', 18)}</button></li>
       <li><button type="button" class="entry" data-act="signout"><span class="gicon plain">${icon('logout', 18)}</span><span class="entry-main"><span class="entry-title">Sign out</span></span>${icon('right', 18)}</button></li>
@@ -727,14 +751,31 @@ document.addEventListener('click', async (ev) => {
       break;
     case 'pin-key': pinKey(el.dataset.k); break;
     case 'pin-del': S.pin.buffer = S.pin.buffer.slice(0, -1); render(); break;
+    case 'bio-unlock': bioUnlock(true); break;
+    case 'bio-toggle':
+      if (PIN.hasBio()) {
+        PIN.disableBio();
+        toast(`${PIN.bioName()} turned off`);
+        renderMain();
+      } else {
+        try {
+          await PIN.enableBio(`Kudukka · ${D.PEOPLE[myRole()].name}`);
+          toast(`${PIN.bioName()} is on`);
+        } catch (e) {
+          if (!e || e.name !== 'NotAllowedError') console.error(e);
+          toast(e && e.name === 'NotAllowedError' ? 'Cancelled' : `Couldn't turn on ${PIN.bioName()}`);
+        }
+        renderMain();
+      }
+      break;
     case 'pin-forgot':
-      PIN.clearPin(); S.locked = false; S.pin = { stage: null, buffer: '', first: '', error: '' };
+      PIN.clearPin(); PIN.disableBio(); S.locked = false; S.pin = { stage: null, buffer: '', first: '', error: '' };
       await fb.logOut();
       break;
     case 'change-pin':
       PIN.clearPin(); S.pin = { stage: null, buffer: '', first: '', error: '' }; render();
       break;
-    case 'lock': S.locked = true; render(); break;
+    case 'lock': S.locked = true; S.bioTried = false; render(); break;
     case 'role':
       el.disabled = true;
       fb.claimRole(S.user, el.dataset.role).catch((e) => { console.error(e); toast("Couldn't save that. Try again."); el.disabled = false; });
@@ -846,7 +887,8 @@ document.addEventListener('keydown', (ev) => {
 });
 
 // ---------- start ----------
-PIN.watchBackground(() => { if (PIN.hasPin() && S.user) { S.locked = true; closeSheet(); render(); } });
+PIN.watchBackground(() => { if (PIN.hasPin() && S.user) { S.locked = true; S.bioTried = false; closeSheet(); render(); } });
+PIN.bioAvailable().then((ok) => { S.bioSupported = ok; if (S.view === 'more') renderMain(); });
 
 fb.finishRedirect();
 fb.watchAuth((user) => {

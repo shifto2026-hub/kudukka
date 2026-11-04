@@ -15,6 +15,11 @@ page.on('console', (m) => { if (m.type() === 'error') errors.push(`console: ${m.
 await page.route('https://www.gstatic.com/firebasejs/**', (r) => r.fulfill({ contentType: 'text/javascript', body: mock }));
 await page.route('https://fonts.googleapis.com/**', (r) => r.fulfill({ contentType: 'text/css', body: '' }));
 
+// A simulated Face ID / Touch ID so the passkey unlock can be tested.
+const cdp = await page.context().newCDPSession(page);
+await cdp.send('WebAuthn.enable');
+await cdp.send('WebAuthn.addVirtualAuthenticator', { options: { protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } });
+
 const shot = (n) => page.screenshot({ path: `${out}/${n}.png`, fullPage: true });
 const click = (sel) => page.locator(sel).first().click();
 
@@ -115,7 +120,29 @@ await click('[data-act="open-month"]');
 await shot('11-month');
 await click('.sheet-head [data-act="sheet-close"]');
 await click('[data-act="nav"][data-v="more"]');
+await page.waitForSelector('[data-act="bio-toggle"]');
 await shot('12-more');
+// turn on Face ID, lock, and check it unlocks without the PIN
+await click('[data-act="bio-toggle"]');
+await page.waitForSelector('[data-act="bio-toggle"] .switch.on');
+await shot('13-more-bio-on');
+await click('[data-act="lock"]');
+await page.waitForSelector('.bio-btn', { timeout: 3000 }).catch(() => {});
+try {
+  await page.waitForSelector('#main .me', { timeout: 5000 });
+  console.log('Face ID auto-unlock: OK');
+} catch { errors.push('Face ID did not unlock'); await shot('14-bio-fail'); }
+// tap path: lock again, wait for auto attempt, and use the button
+await click('[data-act="lock"]');
+await page.waitForSelector('#main .me', { timeout: 5000 }).catch(() => errors.push('second unlock failed'));
+// turning it off removes the button from the lock screen
+await click('[data-act="bio-toggle"]');
+await page.waitForSelector('[data-act="bio-toggle"] .switch:not(.on)');
+await click('[data-act="lock"]');
+await page.waitForSelector('.keypad');
+if (await page.locator('.bio-btn').count()) errors.push('bio button still shown after turning off');
+for (const k of '1234') await click(`[data-act="pin-key"][data-k="${k}"]`);
+await page.waitForSelector('#main .me', { timeout: 5000 }).catch(() => errors.push('PIN unlock after bio off failed'));
 
 console.log('Home "left" figure:', big.trim());
 console.log(errors.length ? `ERRORS:\n${errors.join('\n')}` : 'No errors');

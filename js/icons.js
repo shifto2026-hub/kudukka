@@ -27,6 +27,7 @@ const P = {
   adjust: '<path d="M5 9h14M5 15h14"/>',
   pot: '<path d="M9 4h6v2.5c4 1.6 6.5 4.8 6.5 8.5 0 4.6-4 7-9.5 7S2.5 19.6 2.5 15c0-3.7 2.5-6.9 6.5-8.5z"/>',
   key: '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l2 2M15 8l2 2"/>',
+  face: '<path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><path d="M9 9v1.5M15 9v1.5M12 9v3.5h-1M9.5 15.5c1.5 1 3.5 1 5 0"/>',
 };
 
 export function icon(name, size = 22, extra = '') {

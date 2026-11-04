@@ -111,6 +111,11 @@ input { font: inherit; color: inherit; }
 .key { width: 76px; height: 76px; border-radius: 50%; border: 0; background: var(--card); font-size: 28px; font-weight: 500; }
 .key:active { background: var(--cream-2); }
 .key-del { background: transparent; display: flex; align-items: center; justify-content: center; }
+.bio-btn { margin-top: 20px; color: var(--rust); }
+.switch { width: 46px; height: 28px; border-radius: 14px; background: var(--cream-2); position: relative; flex-shrink: 0; transition: background 0.2s ease; }
+.switch::after { content: ''; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: #fff; transition: transform 0.2s ease; }
+.switch.on { background: var(--olive); }
+.switch.on::after { transform: translateX(18px); }
 
 /* top bar */
 .top { display: flex; align-items: center; justify-content: space-between; }
