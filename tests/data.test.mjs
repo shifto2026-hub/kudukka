@@ -76,4 +76,79 @@ assert.equal(D.monthStats(txns, accounts, '2026-11', 'home').spend, 2500);
 const list = D.entriesFor(txns, accounts, '2026-10', 'sree');
 assert.deepEqual(list.map((x) => x.id), [5, 1, 4]);
 
+// ---------- Phase 2: editable categories ----------
+// Defaults keep their ids, so Phase 1 entries still resolve.
+assert.equal(D.categoryById('food.groceries').name, 'Groceries');
+assert.equal(D.groupOf('car.fuel').id, 'car');
+D.setCategories([
+  { id: 'food.takeaway', name: 'Takeaways' },
+  { id: 'food.coffee-ab12', kind: 'sub', parent: 'food', name: 'Coffee', order: 35 },
+  { id: 'gpets-xx', kind: 'group', name: 'Pets', color: '#7D5A6E', icon: 'pet', order: 55 },
+  { id: 'gpets-xx.food', kind: 'sub', parent: 'gpets-xx', name: 'Pet food', order: 0 },
+  { id: 'travel', hidden: true },
+  { id: 'income.sree2-q', kind: 'income', name: "Sree's second job", order: 5 },
+]);
+assert.equal(D.categoryById('food.takeaway').name, 'Takeaways');
+assert.deepEqual(D.visibleSubs(D.groupById('food')).map((x) => x.name), ['Groceries', 'Eating out', 'Takeaways', 'Coffee']);
+assert.ok(!D.spendGroups().some((g) => g.id === 'travel'), 'hidden group not offered');
+assert.ok(D.spendGroups(true).some((g) => g.id === 'travel'), 'hidden group still known');
+assert.equal(D.groupOf('travel.flights').id, 'travel', 'old travel entries still resolve');
+assert.equal(D.groupOf('gpets-xx.food').name, 'Pets');
+assert.deepEqual(D.incomeSources().map((x) => x.id), ['income.sree', 'income.sree2-q', 'income.sha', 'income.other']);
+const catTx = [t({ id: 'c1', type: 'spend', amount: 300, date: '2026-10-07', accountId: 'shaBank', categoryId: 'gpets-xx.food' })];
+assert.equal(D.monthStats(catTx, accounts, '2026-10', 'home').byGroup['gpets-xx'], 300);
+assert.ok(/^food\.coffee-[a-z0-9]{1,4}$/.test(D.newCategoryId('food.', 'Coffee!')));
+D.setCategories([]);
+assert.equal(D.categoryById('food.takeaway').name, 'Takeaway', 'reset to defaults');
+
+// ---------- Phase 2: shop memory and quick repeat ----------
+const shopTx = [
+  t({ id: 's1', type: 'spend', amount: 4439, date: '2026-10-05', accountId: 'card', categoryId: 'food.groceries', shop: 'Tesco', createdMs: 1 }),
+  t({ id: 's2', type: 'spend', amount: 2210, date: '2026-10-12', accountId: 'shaBank', categoryId: 'food.groceries', shop: ' tesco ', createdMs: 2 }),
+  t({ id: 's3', type: 'spend', amount: 6000, date: '2026-10-06', accountId: 'sreeBank', categoryId: 'car.fuel', shop: 'Shell Staplehurst', createdMs: 3 }),
+  t({ id: 's4', type: 'spend', amount: 850, date: '2026-10-20', accountId: 'card', categoryId: 'food.eatingout', shop: 'Costa', createdMs: 4 }),
+  t({ id: 's5', type: 'spend', amount: 1200, date: '2026-10-21', accountId: 'card', categoryId: 'food.eatingout', createdMs: 5 }),
+];
+const idx = D.shopIndex(shopTx);
+assert.equal(idx.get('tesco').count, 2);
+assert.equal(idx.get('tesco').accountId, 'shaBank', 'latest entry wins');
+assert.deepEqual(D.matchShops(idx, 'te').map((x) => x.shop), ['tesco']);
+assert.deepEqual(D.matchShops(idx, 'st').map((x) => x.shop), ['Shell Staplehurst', 'Costa']);
+assert.deepEqual(D.matchShops(idx, ''), []);
+const tpl = D.recentTemplates(shopTx, 6);
+assert.equal(tpl[0].amount, 1200);
+assert.equal(tpl.filter((x) => D.shopKey(x.shop) === 'tesco').length, 1, 'one template per shop');
+
+// ---------- Phase 2: search and filters ----------
+const flagged = [...shopTx, t({ id: 'f1', type: 'spend', amount: 4000, date: '2026-09-15', accountId: 'sreeBank', categoryId: 'shopping.gifts', note: 'Mystery', flag: true, flagFor: 'sree', flagNote: 'What was this?', tripId: 'th' })];
+const trips = [{ id: 'th', name: 'Thailand', startDate: '2026-09-10', endDate: '2026-09-24', budget: 200000 }];
+assert.deepEqual(D.searchEntries(flagged, accounts, { text: 'tesco' }).map((x) => x.id), ['s2', 's1']);
+assert.deepEqual(D.searchEntries(flagged, accounts, { text: '44.39' }).map((x) => x.id), ['s1']);
+assert.deepEqual(D.searchEntries(flagged, accounts, { text: '£60' }).map((x) => x.id), ['s3']);
+assert.deepEqual(D.searchEntries(flagged, accounts, { text: 'thailand' }, trips).map((x) => x.id), ['f1']);
+assert.deepEqual(D.searchEntries(flagged, accounts, { flagged: true }).map((x) => x.id), ['f1']);
+assert.deepEqual(D.searchEntries(flagged, accounts, { groupId: 'car' }).map((x) => x.id), ['s3']);
+assert.deepEqual(D.searchEntries(flagged, accounts, { month: '2026-09' }).map((x) => x.id), ['f1']);
+assert.deepEqual(D.searchEntries(flagged, accounts, { person: 'sree' }).map((x) => x.id), ['s3', 'f1']);
+assert.deepEqual(D.searchEntries(flagged, accounts, { accountId: 'card', text: 'eating' }).map((x) => x.id), ['s5', 's4']);
+
+// ---------- Phase 2: trips ----------
+assert.equal(D.tripStatus(trips[0], '2026-09-01'), 'upcoming');
+assert.equal(D.tripStatus(trips[0], '2026-09-15'), 'now');
+assert.equal(D.tripStatus(trips[0], '2026-10-01'), 'past');
+assert.deepEqual(D.tripsOnDate(trips, '2026-09-24').map((x) => x.id), ['th']);
+assert.deepEqual(D.tripsOnDate(trips, '2026-09-25'), []);
+const ts = D.tripStats(trips[0], flagged, accounts);
+assert.equal(ts.total, 4000);
+assert.equal(ts.left, 196000);
+assert.equal(ts.spendBy.sree, 4000);
+
+// ---------- Phase 2: export ----------
+assert.equal(D.toCSV([['a', 'b,c', 'say "hi"', null]]), 'a,"b,c","say ""hi""",');
+const csv = D.entriesCSV(flagged, accounts, trips).split('\r\n');
+assert.equal(csv.length, flagged.length + 1);
+assert.ok(csv[1].startsWith('2026-09-15,Spend,40.00,'), csv[1]);
+assert.ok(csv[1].includes('Thailand') && csv[1].includes('Ask Sree'));
+assert.ok(D.accountsCSV(accounts, txns).split('\r\n')[3].includes('Credit card'));
+
 console.log('All data and calculator tests passed');

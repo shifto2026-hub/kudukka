@@ -18,7 +18,7 @@ export async function signOut() { user = null; authCbs.forEach((c) => c(null)); 
 export const initializeFirestore = () => ({});
 export const persistentLocalCache = () => ({});
 export const persistentMultipleTabManager = () => ({});
-export const serverTimestamp = () => ({ toMillis: () => Date.now() });
+export const serverTimestamp = () => { const ts = Date.now(); return { toMillis: () => ts }; };
 export function collection(_db, ...segs) { return { kind: 'col', path: segs.join('/') }; }
 export function doc(base, ...segs) {
   if (base && base.kind === 'col') return { kind: 'doc', path: `${base.path}/${segs[0] || `id${++counter}${Math.random().toString(36).slice(2, 6)}`}`, get id() { return this.path.split('/').pop(); } };
@@ -34,7 +34,7 @@ export function onSnapshot(ref, cb) {
       const docs = [...store.entries()]
         .filter(([p]) => p.startsWith(`${ref.path}/`) && p.split('/').length === ref.path.split('/').length + 1)
         .map(([p, d]) => ({ id: p.split('/').pop(), data: () => d }));
-      cb({ docs });
+      cb({ docs, metadata: { fromCache: false } });
     }
   };
   listeners.add(fire);

@@ -61,7 +61,7 @@ export const logOut = () => signOut(auth);
 
 export const watchHousehold = (cb, onErr) => onSnapshot(householdRef(), (s) => cb(s.exists() ? s.data() : null), onErr);
 export const watchCollection = (name, cb, onErr) =>
-  onSnapshot(col(name), (s) => cb(s.docs.map((d) => ({ id: d.id, ...d.data() }))), onErr);
+  onSnapshot(col(name), (s) => cb(s.docs.map((d) => ({ id: d.id, ...d.data() })), { fromCache: !!(s.metadata && s.metadata.fromCache) }), onErr);
 
 export async function claimRole(user, role) {
   const snap = await getDoc(householdRef());
@@ -77,4 +77,6 @@ export function saveDoc(name, id, data, isNew) {
 }
 
 export const restoreDoc = (name, id, data) => setDoc(doc(col(name), id), data);
+// Create-or-update in one go (used for categories, whose defaults may not exist in Firestore yet).
+export const mergeDoc = (name, id, data) => setDoc(doc(col(name), id), { ...data, updatedAt: serverTimestamp() }, { merge: true });
 export const removeDoc = (name, id) => deleteDoc(doc(col(name), id));
