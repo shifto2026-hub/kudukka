@@ -29,6 +29,12 @@ const S = {
   bioSupported: false,
   bioTried: false,
   trips: [],
+  bills: [],
+  plans: {}, // money month label → { expected: { sree, sha, joint } }
+  billsOffset: 0, // 0 = this money month on the Bills screen, 1 = next
+  billsMode: 'list',
+  billsDay: null,
+  backTo: null,
   view: 'home', // home | entries | accounts | more | trips | trip | categories
   viewArg: null, // trip id for the trip page
   person: 'home',
@@ -45,6 +51,15 @@ function blankSearch() {
 const filterCount = () => ['type', 'accountId', 'groupId', 'tripId'].filter((k) => S.search[k]).length + (S.search.flagged ? 1 : 0);
 const otherRole = () => (myRole() === 'sree' ? 'sha' : 'sree');
 const tripById = (id) => S.trips.find((t) => t.id === id);
+const settings = () => (S.household && S.household.settings) || {};
+const payday = () => Number(settings().payday) || 25;
+const billById = (id) => S.bills.find((b) => b.id === id);
+const liveBills = () => S.bills.filter((b) => !b.archived);
+function currentPlan() {
+  const win = D.moneyMonth(D.todayISO(), payday());
+  const override = S.plans[win.label] && S.plans[win.label].expected;
+  return D.paydayPlan({ txns: S.txns, accounts: S.accounts, bills: S.bills, today: D.todayISO(), payday: payday(), incomeOverride: override || null });
+}
 const activeTrips = () => S.trips.filter((t) => !t.archived).sort((a, b) => (a.startDate < b.startDate ? 1 : -1));
 let unsubs = [];
 
@@ -88,6 +103,8 @@ function startData() {
   // Categories: Firestore holds only edits and additions on top of the defaults in data.js.
   unsubs.push(fb.watchCollection('categories', (rows) => { D.setCategories(rows); renderMain(); if (S.sheet === 'group' || S.sheet === 'income') renderSheet(); }, onErr));
   unsubs.push(fb.watchCollection('trips', (rows) => { S.trips = rows; renderMain(); }, onErr));
+  unsubs.push(fb.watchCollection('bills', (rows) => { S.bills = rows; renderMain(); }, onErr));
+  unsubs.push(fb.watchCollection('plans', (rows) => { S.plans = Object.fromEntries(rows.map((r) => [r.id, r])); renderMain(); }, onErr));
 }
 function stopData() {
   unsubs.forEach((u) => u && u());
@@ -282,7 +299,7 @@ function renderMain() {
   const main = $('#main');
   if (!main) return;
   const v = S.view;
-  const views = { home: viewHome, entries: viewEntries, accounts: viewAccounts, more: viewMore, trips: viewTrips, trip: viewTrip, categories: viewCategories };
+  const views = { home: viewHome, entries: viewEntries, accounts: viewAccounts, more: viewMore, trips: viewTrips, trip: viewTrip, categories: viewCategories, bills: viewBills, plan: viewPlan };
   // Keep the search box focused (and its cursor) while results update underneath.
   const q = document.activeElement && document.activeElement.id === 'q' ? document.activeElement.selectionStart : null;
   main.innerHTML = header() + (views[v] || viewMore)();
@@ -291,6 +308,7 @@ function renderMain() {
 
 // A small back bar for the screens inside More.
 function subhead(title, back) {
+  if (S.backTo && S.backTo !== S.view && back !== 'trips') back = S.backTo;
   return `<div class="subhead"><button type="button" class="icon-btn" data-act="nav" data-v="${back}" aria-label="Back">${icon('left', 22)}</button><h1 class="h2">${esc(title)}</h1></div>`;
 }
 
@@ -366,7 +384,7 @@ function viewHome() {
   const moved = S.person !== 'home' && (s.movedIn || s.movedOut)
     ? `<p class="moved">${s.movedOut ? `Moved to ${S.person === 'sree' ? 'Sha' : 'Sree'}: <b>${D.money(s.movedOut)}</b>` : ''}${s.movedIn && s.movedOut ? ' · ' : ''}${s.movedIn ? `Received from ${S.person === 'sree' ? 'Sha' : 'Sree'}: <b>${D.money(s.movedIn)}</b>` : ''}</p>`
     : '';
-  return `${monthPill()}${personSwitch()}${flagCard()}${tripCard()}
+  return `${monthPill()}${personSwitch()}${planCards()}${flagCard()}${tripCard()}
     <section class="card hero">
       <span class="muted small">${label}</span>
       <span class="big" style="color:${accent}">${D.money(s.left)}</span>
@@ -406,7 +424,7 @@ function entryRow(t) {
   let title = t.shop || t.note || (cat ? cat.name : D.ENTRY_TYPES[t.type]);
   const bits = [];
   if (t.type === 'transfer') {
-    title = t.note || (to && to.type === 'credit' ? `Paid ${to.name}` : 'Transfer');
+    title = t.note || (D.isDebt(to) ? `Paid ${to.name}` : 'Transfer');
     bits.push(`${acc ? esc(acc.name) : '?'} → ${to ? esc(to.name) : '?'}`);
   } else {
     if (cat && title !== cat.name) bits.push(esc(cat.name));
@@ -487,11 +505,13 @@ function viewEntries() {
 function viewAccounts() {
   const show = (a) => (S.person === 'home' || a.owner === S.person) && (S.showArchived || !a.archived);
   const accs = S.accounts.filter(show);
-  const banks = accs.filter((a) => a.type !== 'credit');
+  const banks = accs.filter((a) => !D.isDebt(a));
   const cards = accs.filter((a) => a.type === 'credit');
+  const loans = accs.filter((a) => a.type === 'loan');
   const archivedCount = S.accounts.filter((a) => a.archived && (S.person === 'home' || a.owner === S.person)).length;
   const bankTotal = banks.filter((a) => !a.archived).reduce((n, a) => n + D.balanceOf(a, S.txns), 0);
-  const owedTotal = cards.filter((a) => !a.archived).reduce((n, a) => n + Math.max(0, -D.balanceOf(a, S.txns)), 0);
+  const owedTotal = [...cards, ...loans].filter((a) => !a.archived).reduce((n, a) => n + Math.max(0, -D.balanceOf(a, S.txns)), 0);
+  const debtInfo = Object.fromEntries(D.debtsList(S.accounts, S.txns, S.bills).map((d) => [d.account.id, d]));
 
   const bankRow = (a) => {
     const b = D.balanceOf(a, S.txns);
@@ -512,19 +532,34 @@ function viewAccounts() {
         <span class="entry-sub">${D.PEOPLE[a.owner].name}${a.dueDay ? ` · Due on the ${ordinal(a.dueDay)}` : ''}</span></span>
         <span class="entry-amt"><span class="small muted block">${credit ? 'In credit' : 'Owed'}</span>${D.money(credit || owed)}</span>
       </span>
-      ${a.creditLimit ? `<span class="bar thin full"><span style="width:${pct}%;background:${pct > 80 ? 'var(--warn)' : 'var(--rust)'}"></span></span><span class="entry-sub">${D.money(owed)} of ${D.money(a.creditLimit)} limit</span>` : ''}
+      ${a.creditLimit ? `<span class="bar thin full"><span style="width:${pct}%;background:${pct > 80 ? 'var(--warn)' : 'var(--rust)'}"></span></span><span class="entry-sub">${D.money(owed)} of ${D.money(a.creditLimit)} limit${a.apr ? ` · ${a.apr}% APR` : ''}</span>` : ''}
+    </button></li>`;
+  };
+  const loanRow = (a) => {
+    const owed = Math.max(0, -D.balanceOf(a, S.txns));
+    const d = debtInfo[a.id];
+    const free = d && d.months !== null && d.months !== undefined ? `Debt-free ${D.monthShort(D.shiftMonth(D.currentMonth(), d.months))}` : '';
+    return `<li><button type="button" class="entry col" data-act="edit-account" data-id="${a.id}">
+      <span class="entry-top">
+        <span class="gicon" style="background:${D.PEOPLE[a.owner].color};color:${D.PEOPLE[a.owner].ink}">${icon('loan', 18)}</span>
+        <span class="entry-main"><span class="entry-title">${esc(a.name)}${a.archived ? ' <span class="tag">Archived</span>' : ''}</span>
+        <span class="entry-sub">${D.PEOPLE[a.owner].name}${a.apr ? ` · ${a.apr}% APR` : ''}${d && d.payment ? ` · ${D.money(d.payment)} a month` : ''}</span></span>
+        <span class="entry-amt"><span class="small muted block">${owed ? 'Owed' : 'Paid off'}</span>${D.money(owed)}</span>
+      </span>
+      ${free ? `<span class="entry-sub ok-text">${icon('check', 12)} ${free} at this rate</span>` : d && !d.payment ? '<span class="entry-sub">Add its monthly repayment in Bills to see a debt-free date</span>' : ''}
     </button></li>`;
   };
   return `${personSwitch()}
     <section class="totals">
       <div class="card stat"><span class="muted small">In accounts</span><span class="big-sm">${D.money(bankTotal)}</span></div>
-      <div class="card stat"><span class="muted small">Owed on cards</span><span class="big-sm">${D.money(owedTotal)}</span></div>
+      <div class="card stat"><span class="muted small">${loans.length ? 'Owed on cards and loans' : 'Owed on cards'}</span><span class="big-sm">${D.money(owedTotal)}</span></div>
     </section>
     <div class="row-between"><h2 class="h3">Bank and savings</h2></div>
     ${banks.length ? `<ul class="entries card tight">${banks.map(bankRow).join('')}</ul>` : '<p class="muted pad">No bank accounts yet.</p>'}
     <div class="row-between"><h2 class="h3">Credit cards</h2></div>
     ${cards.length ? `<ul class="entries card tight">${cards.map(cardRow).join('')}</ul>` : '<p class="muted pad">No credit cards yet.</p>'}
-    <button type="button" class="btn btn-ghost btn-block" data-act="add-account">${icon('plus', 18)} Add account or card</button>
+    ${loans.length ? `<div class="row-between"><h2 class="h3">Loans and finance</h2></div><ul class="entries card tight">${loans.map(loanRow).join('')}</ul>` : ''}
+    <button type="button" class="btn btn-ghost btn-block" data-act="add-account">${icon('plus', 18)} Add account, card or loan</button>
     ${archivedCount ? `<button type="button" class="link center-block" data-act="toggle-archived">${S.showArchived ? 'Hide' : 'Show'} archived (${archivedCount})</button>` : ''}`;
 }
 
@@ -536,6 +571,8 @@ function viewMore() {
       <div class="me">${avatar(role, 52)}<div><b>${D.PEOPLE[role].name}</b><span class="muted small block">${esc(S.user.email)}</span></div></div>
     </section>
     <ul class="entries card tight">
+      <li><button type="button" class="entry" data-act="nav" data-v="plan"><span class="gicon plain">${icon('pot', 18)}</span><span class="entry-main"><span class="entry-title">Payday plan</span><span class="entry-sub">Free to plan, safe to spend, suggestions</span></span>${icon('right', 18)}</button></li>
+      <li><button type="button" class="entry" data-act="nav" data-v="bills"><span class="gicon plain">${icon('bills', 18)}</span><span class="entry-main"><span class="entry-title">Bills and repayments</span><span class="entry-sub">${liveBills().length ? `${liveBills().length} regular ${liveBills().length === 1 ? 'bill' : 'bills'}` : 'Rent, energy, loans and subscriptions'}</span></span>${icon('right', 18)}</button></li>
       <li><button type="button" class="entry" data-act="nav" data-v="trips"><span class="gicon plain">${icon('travel', 18)}</span><span class="entry-main"><span class="entry-title">Trips</span><span class="entry-sub">${activeTrips().length ? `${activeTrips().length} ${activeTrips().length === 1 ? 'trip' : 'trips'}` : 'Track a holiday as one total'}</span></span>${icon('right', 18)}</button></li>
       <li><button type="button" class="entry" data-act="nav" data-v="categories"><span class="gicon plain">${icon('tag', 18)}</span><span class="entry-main"><span class="entry-title">Categories and income</span><span class="entry-sub">Rename, add, recolour or hide</span></span>${icon('right', 18)}</button></li>
       <li><button type="button" class="entry" data-act="export"><span class="gicon plain">${icon('download', 18)}</span><span class="entry-main"><span class="entry-title">Export my data</span><span class="entry-sub">Spreadsheet files of all entries and accounts</span></span>${icon('right', 18)}</button></li>
@@ -548,9 +585,182 @@ function viewMore() {
     </ul>
     <section class="card">
       <h2 class="h3">Coming next</h2>
-      <p class="muted">Phase 3 brings bills, a calendar of bills and paydays, next month's prediction and the direct debit guard. Then pots and reports.</p>
+      <p class="muted">Phase 4 brings light, optional pots for goals like a holiday, monthly and yearly reports, and a guided close-the-month checklist.</p>
     </section>
-    <p class="footer-note"><span class="tagline-sm">Neeyum Njanum, Oru Kudukka</span><br>Phase 2</p>`;
+    <p class="footer-note"><span class="tagline-sm">Neeyum Njanum, Oru Kudukka</span><br>Phase 3</p>`;
+}
+
+// ---------- Phase 3: bills ----------
+const winLabel = (win) => `${D.shortDate(win.start)} – ${D.shortDate(win.end)}`;
+const monthName = (label) => D.monthLabel(label).split(' ')[0];
+
+function billVisual(b) {
+  if (b.kind === 'repayment') return { color: 'var(--quiet)', ic: 'loan' };
+  const g = D.groupOf(b.categoryId) || D.groupById('bills');
+  return { color: g.color, ic: g.icon };
+}
+
+function billRow(row) {
+  const b = row.bill;
+  const v = billVisual(b);
+  const acc = accountById(b.accountId);
+  const change = D.billPriceChange(b, S.txns);
+  const when = row.paid ? `Paid ${D.shortDate(row.paid.date)}` : row.status === 'late' ? `Was due ${D.shortDate(row.due)} · not entered yet` : row.daysTo === 0 ? 'Due today' : row.daysTo === 1 ? 'Due tomorrow' : `Due ${D.dayLabel(row.due)}`;
+  const chip = row.paid ? `<span class="pill-chip ok">${icon('check', 12)} Paid</span>` : row.status === 'late' ? '<span class="pill-chip warn">Check</span>' : row.daysTo <= 3 ? '<span class="pill-chip soon">Soon</span>' : '';
+  return `<li class="bill-li${row.paid ? ' is-paid' : ''}"><button type="button" class="entry" data-act="edit-bill" data-id="${b.id}">
+      <span class="gicon" style="background:${v.color}">${icon(v.ic, 18)}</span>
+      <span class="entry-main"><span class="entry-title">${esc(b.name)}</span>
+        <span class="entry-sub">${when}${acc ? ` · ${esc(acc.name)}` : ''}</span>
+        ${change ? `<span class="flag-note">${icon('alert', 12)} ${change.diff > 0 ? 'Went up' : 'Went down'} ${D.money(Math.abs(change.diff))} on ${D.shortDate(change.date)}</span>` : ''}</span>
+      <span class="entry-amt">${b.varies && !row.paid ? '~' : ''}${D.money(row.amount)}${chip}</span>
+    </button>
+    ${row.paid ? '' : `<button type="button" class="paid-btn" data-act="pay-bill" data-id="${b.id}" data-due="${row.due}" aria-label="Enter payment for ${esc(b.name)}">${icon('check', 16)} Paid</button>`}
+  </li>`;
+}
+
+function billsCalendar(rows, win) {
+  const start = win.start;
+  const days = D.daysBetween(start, win.end) + 1;
+  const [y, m, d] = start.split('-').map(Number);
+  const lead = (new Date(y, m - 1, d).getDay() + 6) % 7; // Monday first
+  const byDay = {};
+  for (const r of rows) (byDay[r.due] = byDay[r.due] || []).push(r);
+  const today = D.todayISO();
+  let cells = '';
+  for (let i = 0; i < lead; i++) cells += '<span class="cal-cell empty"></span>';
+  for (let i = 0; i < days; i++) {
+    const iso = D.addDays(start, i);
+    const list = byDay[iso] || [];
+    const dots = list.slice(0, 4).map((r) => `<span class="cal-dot ${r.paid ? 'ok' : r.status === 'late' ? 'warn' : 'due'}"></span>`).join('');
+    const isPay = iso === start;
+    cells += `<button type="button" class="cal-cell${iso === today ? ' today' : ''}${S.billsDay === iso ? ' on' : ''}${isPay ? ' pay' : ''}" data-act="cal-day" data-d="${iso}" aria-label="${D.dayLabel(iso)}${list.length ? `, ${list.length} bill${list.length > 1 ? 's' : ''}` : ''}${isPay ? ', payday' : ''}">
+      <span class="cal-num">${Number(iso.slice(8))}</span><span class="cal-dots">${isPay ? `<span class="cal-pay">${icon('income', 11)}</span>` : ''}${dots}</span></button>`;
+  }
+  const picked = S.billsDay ? rows.filter((r) => r.due === S.billsDay) : [];
+  return `<section class="card cal">
+    <div class="cal-head">${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((x) => `<span>${x}</span>`).join('')}</div>
+    <div class="cal-grid">${cells}</div>
+    <div class="legend"><span><span class="cal-dot due"></span>Due</span><span><span class="cal-dot ok"></span>Paid</span><span><span class="cal-dot warn"></span>Check</span><span>${icon('income', 12)} Payday</span></div>
+  </section>
+  ${S.billsDay ? `<h3 class="day">${D.dayLabel(S.billsDay)}</h3>${picked.length ? `<ul class="entries card tight">${picked.map(billRow).join('')}</ul>` : '<p class="muted pad">No bills due this day.</p>'}` : ''}`;
+}
+
+function detectedCards() {
+  const dismissed = settings().dismissedBills || [];
+  const found = D.detectBills(S.txns, S.bills, D.todayISO(), dismissed).slice(0, 3);
+  return found.map((f) => `<section class="card suggest-card">
+    <div class="row-between"><span class="entry-title">${icon('bulb', 16)} Looks like a ${f.varies ? 'regular' : 'monthly'} bill</span></div>
+    <span><b>${esc(f.name)}</b> · ${f.varies ? 'about ' : ''}${D.money(f.amount)} around the ${ordinal(f.dueDay)}, seen in ${f.months} months</span>
+    <div class="row-gap"><button type="button" class="btn btn-primary btn-sm" data-act="add-detected" data-k="${esc(f.key)}">Add as a bill</button>
+    <button type="button" class="btn btn-ghost btn-sm" data-act="dismiss-detected" data-k="${esc(f.key)}">Not a bill</button></div>
+  </section>`).join('');
+}
+
+function viewBills() {
+  let win = D.moneyMonth(D.todayISO(), payday());
+  for (let i = 0; i < S.billsOffset; i++) win = D.nextMoneyMonth(win, payday());
+  const rows = D.billsForWindow(S.bills, S.txns, win, D.todayISO());
+  const total = rows.reduce((n, r) => n + r.amount, 0);
+  const paid = rows.filter((r) => r.paid).reduce((n, r) => n + r.amount, 0);
+  const nextWin = D.nextMoneyMonth(win, payday());
+  const nextTotal = D.billsForWindow(S.bills, S.txns, nextWin, D.todayISO()).reduce((n, r) => n + r.expected, 0);
+  const order = { late: 0, due: 1, paid: 2 };
+  const sorted = [...rows].sort((a, b) => order[a.status] - order[b.status] || (a.due < b.due ? -1 : 1));
+  const renew = S.billsOffset === 0 ? D.renewalsSoon(S.bills, D.todayISO()) : [];
+  const yearlySetAside = liveBills().filter((b) => b.freq === 'yearly').reduce((n, b) => n + D.billMonthly(b, S.txns), 0);
+  return `${subhead('Bills', 'more')}
+    <div class="win-nav">
+      <button type="button" class="icon-btn" data-act="bills-win" data-d="-1" ${S.billsOffset === 0 ? 'disabled' : ''} aria-label="Earlier">${icon('left', 20)}</button>
+      <div class="win-title"><b>${monthName(win.label)}'s bills</b><span class="muted small">${winLabel(win)}</span></div>
+      <button type="button" class="icon-btn" data-act="bills-win" data-d="1" ${S.billsOffset >= 2 ? 'disabled' : ''} aria-label="Later">${icon('right', 20)}</button>
+    </div>
+    <section class="totals">
+      <div class="card stat"><span class="muted small">Promised</span><span class="big-sm">${D.money(total)}</span><span class="small muted">${rows.length} ${rows.length === 1 ? 'bill' : 'bills'}</span></div>
+      <div class="card stat"><span class="muted small">Still due</span><span class="big-sm">${D.money(total - paid)}</span><span class="small muted">${rows.filter((r) => r.paid).length} of ${rows.length} paid</span></div>
+    </section>
+    ${S.billsOffset === 0 ? detectedCards() : ''}
+    ${renew.map((r) => `<section class="card suggest-card warn-card"><span class="entry-title">${icon('alert', 16)} ${esc(r.bill.name)} renews ${r.days === 0 ? 'today' : `in ${r.days} ${r.days === 1 ? 'day' : 'days'}`}</span><span class="muted small">Worth comparing prices before ${D.shortDate(r.date)}.</span></section>`).join('')}
+    <div class="segs two" role="group" aria-label="View"><button type="button" class="seg${S.billsMode === 'list' ? ' on' : ''}" data-act="bills-mode" data-m="list">List</button><button type="button" class="seg${S.billsMode === 'cal' ? ' on' : ''}" data-act="bills-mode" data-m="cal">Calendar</button></div>
+    ${S.billsMode === 'cal' ? billsCalendar(rows, win) : rows.length ? `<ul class="entries card tight">${sorted.map(billRow).join('')}</ul>` : `<section class="card"><p class="muted">${S.bills.length ? `No bills due in ${monthName(win.label)}.` : 'Add your rent, council tax, energy, phones and subscriptions. Kudukka then shows what’s promised each month and what’s still due.'}</p></section>`}
+    <button type="button" class="btn btn-ghost btn-block" data-act="add-bill">${icon('plus', 18)} Add a bill or repayment</button>
+    <p class="muted small pad">${monthName(nextWin.label)} (${winLabel(nextWin)}): <b>${D.money(nextTotal)}</b> already promised.${yearlySetAside ? ` Yearly bills: put aside about <b>${D.money(yearlySetAside)}</b> a month.` : ''}</p>`;
+}
+
+// ---------- Phase 3: payday plan ----------
+function moneyBar(p) {
+  const total = Math.max(1, p.have + p.coming);
+  const seg = (amt, color, label) => (amt > 0 ? `<span style="width:${(Math.min(amt, total) / total) * 100}%;background:${color}" title="${label}"></span>` : '');
+  return `<div class="bar money-bar">${seg(p.billsDue, 'var(--olive)', 'Bills')}${seg(p.cardsOwed, 'var(--rust)', 'Cards')}${seg(Math.max(0, p.free), 'var(--sha)', 'Free')}</div>
+    <div class="legend"><span><span class="odot" style="background:var(--olive)"></span>Bills</span><span><span class="odot" style="background:var(--rust)"></span>Cards</span><span><span class="odot" style="background:var(--sha)"></span>Free to plan</span></div>`;
+}
+
+function suggestionCard(s, i, p) {
+  const n = `<span class="step-num">${i + 1}</span>`;
+  if (s.kind === 'short') return `<li class="card tip warn-card">${n}<div><b>You're ${D.money(s.amount)} short before payday</b><span class="muted small">Move money from savings, or hold off on extras until ${D.shortDate(p.win.nextPayday)}.</span></div></li>`;
+  if (s.kind === 'spend') return `<li class="card tip">${n}<div><b>Keep ${D.money(s.amount)} for everyday spending</b><span class="muted small">About ${D.money(s.perWeek)} a week until payday${s.typicalWeek ? `, close to your usual ${D.money(s.typicalWeek)}` : ''}.</span></div></li>`;
+  if (s.kind === 'emergency') return `<li class="card tip">${n}<div><b>Put ${D.money(s.amount)} into savings</b><span class="muted small">Emergency fund: ${D.money(s.saved)} of ${D.money(s.target)}${s.saved < D.STARTER_EMERGENCY ? '. First aim: £1,000 for small shocks' : ' (3 months of bills)'}.</span></div></li>`;
+  if (s.kind === 'debt') return `<li class="card tip">${n}<div><b>Pay ${D.money(s.amount)} extra off ${esc(s.debt.account.name)}</b><span class="muted small">${s.debt.apr ? `${s.debt.apr}% interest, the highest you have` : 'Your loan'}${s.monthsSooner ? `. Debt-free about ${s.monthsSooner} ${s.monthsSooner === 1 ? 'month' : 'months'} sooner` : ''}.</span></div></li>`;
+  return `<li class="card tip">${n}<div><b>${D.money(s.amount)} left for goals or a buffer</b><span class="muted small">Keep it for a holiday, a goal pot later, or let it roll into next month.</span></div></li>`;
+}
+
+function viewPlan() {
+  const p = currentPlan();
+  const noData = !S.bills.length && !S.txns.some((t) => t.type === 'income');
+  const ex = p.expected;
+  const who = ['sree', 'sha', 'joint'].filter((k) => (ex[k] || 0) || (p.received[k] || 0));
+  const guardLine = (g) => g.status === 'short'
+    ? `<span class="pill-chip bad">Top up ${D.money(-g.after)}</span><span class="muted small block">${g.shortDate > D.todayISO() ? `before ${D.shortDate(g.shortDate)}` : 'now'} · ${g.count} ${g.count === 1 ? 'bill' : 'bills'}, ${D.money(g.due)}</span>`
+    : g.status === 'tight'
+      ? `<span class="pill-chip warn">Tight</span><span class="muted small block">only ${D.money(g.after)} left after ${D.money(g.due)} of bills</span>`
+      : `<span class="pill-chip ok">${icon('check', 12)} Covered</span><span class="muted small block">${D.money(g.due)} of bills to ${D.shortDate(g.lastDue)} · ${D.money(g.after)} left</span>`;
+  const debts = D.debtsList(S.accounts, S.txns, S.bills);
+  return `${subhead('Payday plan', 'more')}
+    <section class="card plan-head">
+      <div class="row-between"><span class="muted small">Money for ${monthName(p.win.label)} · ${winLabel(p.win)}</span>
+        <button type="button" class="link" data-act="open-payday">Payday: ${ordinal(payday())} ${icon('edit', 14)}</button></div>
+      <span class="muted small">Free to plan</span>
+      <span class="big" style="color:${p.free < 0 ? 'var(--danger)' : 'var(--olive)'}">${D.money(p.free)}</span>
+      ${moneyBar(p)}
+      <ul class="calc-list">
+        <li><span>In current accounts now</span><b>+${D.money(p.have)}</b></li>
+        <li><button type="button" class="link-row" data-act="open-expected"><span>Pay still to come ${icon('edit', 13)}</span><b>+${D.money(p.coming)}</b></button>
+          ${who.length ? `<span class="muted small">${who.map((k) => ((ex[k] || 0) > (p.received[k] || 0) ? `${D.PEOPLE[k].name}: ${D.money(p.received[k] || 0)} in of ~${D.money(ex[k])}` : `${D.PEOPLE[k].name}: ${D.money(p.received[k] || 0)} in`)).join(' · ')}</span>` : '<span class="muted small">Enter pay as Income, or tap to set what you expect</span>'}</li>
+        <li><button type="button" class="link-row" data-act="nav" data-v="bills"><span>Bills still due</span><b>−${D.money(p.billsDue)}</b></button></li>
+        <li><span>Credit card balances</span><b>−${D.money(p.cardsOwed)}</b></li>
+      </ul>
+      ${p.saved ? `<span class="muted small">Not counted: ${D.money(p.saved)} in savings.</span>` : ''}
+    </section>
+    ${noData ? `<section class="card"><p class="muted">Add your bills and enter your pay as Income, and this plan fills itself in.</p><button type="button" class="btn btn-primary btn-block" data-act="nav" data-v="bills">Add bills</button></section>` : ''}
+    <section class="card safe-card"><span class="muted small">Safe to spend</span>
+      <span class="big-sm">${D.money(p.safePerWeek)} <span class="small muted">a week</span></span>
+      <span class="small muted">until payday on ${D.dayLabel(p.win.nextPayday)} · ${p.daysLeft} ${p.daysLeft === 1 ? 'day' : 'days'} left</span></section>
+    <h2 class="h3 pad">Suggestions</h2>
+    <ol class="tips">${p.suggestions.map((s, i) => suggestionCard(s, i, p)).join('')}</ol>
+    <p class="muted small pad">Suggestions only, based on common UK guidance: spending money first, then a £1,000 emergency starter, then 3 months of bills, and the highest-interest debt first. Not financial advice.</p>
+    ${p.guard.length ? `<h2 class="h3 pad">${icon('shield', 16)} Direct debit guard</h2>
+      <ul class="entries card tight wrap">${p.guard.map((g) => `<li><div class="entry"><span class="gicon" style="background:${D.PEOPLE[g.account.owner].color};color:${D.PEOPLE[g.account.owner].ink}">${icon('bank', 18)}</span>
+        <span class="entry-main"><span class="entry-title">${esc(g.account.name)}</span><span class="entry-sub">Balance ${D.money(g.balance)}</span></span>
+        <span class="guard-status">${guardLine(g)}</span></div></li>`).join('')}</ul>` : ''}
+    ${debts.length ? `<h2 class="h3 pad">Debts, highest interest first</h2>
+      <ul class="entries card tight wrap">${debts.map((d) => `<li><button type="button" class="entry" data-act="edit-account" data-id="${d.account.id}">
+        <span class="gicon" style="background:${D.PEOPLE[d.account.owner].color};color:${D.PEOPLE[d.account.owner].ink}">${icon(d.account.type === 'loan' ? 'loan' : 'card', 18)}</span>
+        <span class="entry-main"><span class="entry-title">${esc(d.account.name)}</span><span class="entry-sub">${d.apr ? `${d.apr}% APR` : 'No rate set'}${d.months ? ` · debt-free ${D.monthShort(D.shiftMonth(D.currentMonth(), d.months))}` : ''}</span></span>
+        <span class="entry-amt">${D.money(d.owed)}</span></button></li>`).join('')}</ul>` : ''}`;
+}
+
+function planCards() {
+  if (S.person !== 'home') return '';
+  const p = currentPlan();
+  const rows = p.winBills;
+  const due = rows.filter((r) => !r.paid);
+  const next = due[0];
+  return `<section class="totals">
+    <button type="button" class="card stat link-card" data-act="nav" data-v="plan">
+      <span class="muted small">Safe to spend</span><span class="big-sm">${D.money(p.safePerWeek)}</span><span class="small muted">a week till ${D.shortDate(p.win.nextPayday)}</span></button>
+    <button type="button" class="card stat link-card" data-act="nav" data-v="bills">
+      <span class="muted small">Bills to pay</span><span class="big-sm">${D.money(due.reduce((n, r) => n + r.expected, 0))}</span>
+      <span class="small muted">${rows.length ? (next ? `Next: ${esc(next.bill.name)} ${D.shortDate(next.due)}` : `All ${rows.length} paid`) : 'Add your bills'}</span></button>
+  </section>`;
 }
 
 // ---------- trips ----------
@@ -633,7 +843,7 @@ function viewCategories() {
 function renderNav() {
   const nav = $('#nav');
   if (!nav) return;
-  const tab = ['trips', 'trip', 'categories'].includes(S.view) ? 'more' : S.view;
+  const tab = ['trips', 'trip', 'categories', 'bills', 'plan'].includes(S.view) ? (['bills', 'plan'].includes(S.view) && S.backTo === 'home' ? 'home' : 'more') : S.view;
   const b = (v, ic, label) => `<button type="button" class="nav-btn${tab === v ? ' on' : ''}" data-act="nav" data-v="${v}" ${tab === v ? 'aria-current="page"' : ''}>${icon(ic, 24)}<span>${label}</span></button>`;
   nav.innerHTML = `${b('home', 'home', 'Home')}${b('entries', 'list', 'Entries')}
     <div class="nav-add-wrap"><button type="button" class="nav-add" data-act="add-entry" aria-label="Add an entry">${icon('plus', 28)}</button></div>
@@ -661,7 +871,7 @@ function renderSheet() {
   const root = $('#sheet-root');
   if (!root) return;
   if (!S.sheet) { root.innerHTML = ''; return; }
-  const sheets = { entry: sheetEntry, account: sheetAccount, month: sheetMonth, filters: sheetFilters, trip: sheetTrip, group: sheetGroup, income: sheetIncome };
+  const sheets = { entry: sheetEntry, account: sheetAccount, month: sheetMonth, filters: sheetFilters, trip: sheetTrip, group: sheetGroup, income: sheetIncome, bill: sheetBill, payday: sheetPayday, expected: sheetExpected };
   const body = (sheets[S.sheet] || sheetMonth)();
   const existing = root.querySelector('.sheet');
   if (existing && existing.dataset.kind === S.sheet) {
@@ -697,7 +907,7 @@ function newEntryForm(type = 'spend') {
   const f = {
     isNew: true, id: fb.newId('transactions'), type, amountText: '', accountId, toAccountId: '',
     groupId: '', categoryId: '', date: D.defaultEntryDate(S.month, LS.get('lastDate')), note: '', adjSign: '+',
-    shop: '', tripId: '', flag: false, flagFor: '', flagNote: '',
+    shop: '', tripId: '', flag: false, flagFor: '', flagNote: '', billId: '',
     templates: D.recentTemplates(S.txns, 6), shopIdx: D.shopIndex(S.txns),
   };
   if (type === 'income') f.categoryId = incomeDefault(accountId);
@@ -728,7 +938,7 @@ function editEntryForm(t) {
     accountId: t.accountId || '', toAccountId: t.toAccountId || '',
     groupId: g ? g.id : '', categoryId: t.categoryId || '', date: t.date, note: t.note || '',
     adjSign: t.amount < 0 ? '-' : '+', original: t,
-    shop: t.shop || '', tripId: t.tripId || '', flag: !!t.flag, flagFor: t.flagFor || '', flagNote: t.flagNote || '',
+    shop: t.shop || '', tripId: t.tripId || '', flag: !!t.flag, flagFor: t.flagFor || '', flagNote: t.flagNote || '', billId: t.billId || '',
     templates: [], shopIdx: D.shopIndex(S.txns),
   };
 }
@@ -877,6 +1087,7 @@ function saveEntry() {
     flag: !!f.flag,
     flagFor: f.flag ? (f.flagFor || otherRole()) : null,
     flagNote: f.flag ? (f.flagNote || '').trim() : '',
+    billId: f.billId || null,
   };
   if (f.isNew) data.createdBy = myRole();
   LS.set('lastDate', f.date);
@@ -901,16 +1112,16 @@ function newAccountForm() {
   const role = myRole();
   return {
     isNew: true, id: fb.newId('accounts'), name: '', bank: '', owner: S.person !== 'home' ? S.person : role || 'sha',
-    type: 'current', openingText: '', openingDate: D.monthStart(S.month), limitText: '', last4: '', dueDay: '', checkText: '',
+    type: 'current', openingText: '', openingDate: D.monthStart(S.month), limitText: '', last4: '', dueDay: '', checkText: '', aprText: '',
   };
 }
 function editAccountForm(a) {
-  const ob = a.type === 'credit' ? -(a.openingBalance || 0) : (a.openingBalance || 0);
+  const ob = D.isDebt(a) ? -(a.openingBalance || 0) : (a.openingBalance || 0);
   return {
     isNew: false, id: a.id, name: a.name || '', bank: a.bank || '', owner: a.owner, type: a.type,
     openingText: (ob / 100).toFixed(2).replace(/\.00$/, ''), openingDate: a.openingDate || D.monthStart(S.month),
     limitText: a.creditLimit ? String(a.creditLimit / 100) : '', last4: a.last4 || '', dueDay: a.dueDay ? String(a.dueDay) : '',
-    checkText: '', archived: !!a.archived,
+    checkText: '', archived: !!a.archived, aprText: a.apr ? String(a.apr) : '',
   };
 }
 
@@ -921,10 +1132,10 @@ function checkLine() {
   const real = evaluateToPence(f.checkText);
   if (real === null) return '<span class="err">Enter the amount shown in your bank app.</span>';
   const now = D.balanceOf(a, S.txns);
-  const realBal = a.type === 'credit' ? -real : real;
+  const realBal = D.isDebt(a) ? -real : real;
   const diff = realBal - now;
   if (diff === 0) return `<span class="ok">${icon('check', 16)} Matches. Kudukka agrees with your bank.</span>`;
-  return `<span>Kudukka shows ${D.money(a.type === 'credit' ? -now : now)}. Difference ${D.money(Math.abs(diff))}.</span>
+  return `<span>Kudukka shows ${D.money(D.isDebt(a) ? -now : now)}. Difference ${D.money(Math.abs(diff))}.</span>
     <button type="button" class="btn btn-ghost btn-sm" data-act="add-adjust" data-diff="${diff}">Add a ${D.money(Math.abs(diff))} adjustment</button>`;
 }
 
@@ -933,26 +1144,29 @@ function sheetAccount() {
   const owners = ['sree', 'sha', 'joint'].map((o) => `<button type="button" class="seg seg-${o}${f.owner === o ? ' on' : ''}" aria-pressed="${f.owner === o}" data-act="acc-owner" data-o="${o}">${D.PEOPLE[o].name}</button>`).join('');
   const types = Object.entries(D.ACCOUNT_TYPES).map(([k, v]) => `<button type="button" class="chip${f.type === k ? ' on' : ''}" data-act="acc-type" data-t="${k}">${v}</button>`).join('');
   const isCard = f.type === 'credit';
+  const isOwed = isCard || f.type === 'loan';
   const used = !f.isNew && S.txns.some((t) => t.accountId === f.id || t.toAccountId === f.id);
   return `<div class="sheet-head"><h2 class="h2" id="sheet-title">${f.isNew ? 'New account' : 'Edit account'}</h2><button type="button" class="icon-btn" data-act="sheet-close" aria-label="Close">${icon('x', 22)}</button></div>
     <div class="field"><span class="label">Whose is it?</span><div class="segs" role="group" aria-label="Owner">${owners}</div></div>
     <div class="field"><span class="label">Type</span><div class="chips">${types}</div></div>
-    <div class="field"><label class="label" for="a-name">Nickname</label><input id="a-name" name="name" class="input" maxlength="40" placeholder="${isCard ? 'e.g. Amex' : 'e.g. Monzo current'}" value="${esc(f.name)}" ${f.isNew ? 'data-autofocus' : ''}>${err('name')}</div>
+    <div class="field"><label class="label" for="a-name">Nickname</label><input id="a-name" name="name" class="input" maxlength="40" placeholder="${isCard ? 'e.g. Amex' : f.type === 'loan' ? 'e.g. Car finance' : 'e.g. Monzo current'}" value="${esc(f.name)}" ${f.isNew ? 'data-autofocus' : ''}>${err('name')}</div>
     <div class="field"><label class="label" for="a-bank">Bank</label><input id="a-bank" name="bank" class="input" maxlength="40" placeholder="Optional" value="${esc(f.bank)}"></div>
     <div class="field two-col">
-      <div><label class="label" for="a-open">${isCard ? 'Amount owed' : 'Balance'}</label><div class="amount-wrap small"><span class="pound">£</span><input id="a-open" name="openingText" class="input bare" inputmode="decimal" placeholder="0.00" value="${esc(f.openingText)}"></div></div>
+      <div><label class="label" for="a-open">${isOwed ? 'Amount owed' : 'Balance'}</label><div class="amount-wrap small"><span class="pound">£</span><input id="a-open" name="openingText" class="input bare" inputmode="decimal" placeholder="0.00" value="${esc(f.openingText)}"></div></div>
       <div><label class="label" for="a-odate">On this date</label><input id="a-odate" name="openingDate" type="date" class="input" value="${esc(f.openingDate)}"></div>
     </div>
-    <p class="hint block">${isCard ? 'What you owed on this date, before any entries you add from then on.' : 'The balance on this date, before any entries you add from then on.'}</p>
+    <p class="hint block">${isOwed ? 'What you owed on this date, before any entries you add from then on.' : 'The balance on this date, before any entries you add from then on.'}</p>
     ${err('openingText')}
     ${isCard ? `<div class="field three-col">
       <div><label class="label" for="a-limit">Credit limit</label><input id="a-limit" name="limitText" class="input" inputmode="decimal" placeholder="Optional" value="${esc(f.limitText)}"></div>
       <div><label class="label" for="a-last4">Last 4 digits</label><input id="a-last4" name="last4" class="input" inputmode="numeric" maxlength="4" placeholder="Optional" value="${esc(f.last4)}"></div>
       <div><label class="label" for="a-due">Due day</label><input id="a-due" name="dueDay" class="input" inputmode="numeric" maxlength="2" placeholder="1–31" value="${esc(f.dueDay)}"></div>
     </div>${err('last4')}${err('dueDay')}` : ''}
+    ${isOwed ? `<div class="field"><label class="label" for="a-apr">Interest rate (APR %)</label><input id="a-apr" name="aprText" class="input" inputmode="decimal" maxlength="6" placeholder="Optional, e.g. 9.9" value="${esc(f.aprText)}">
+      <p class="hint">${f.type === 'loan' ? 'Used to work out your debt-free date. Add the monthly repayment in Bills.' : 'Helps Kudukka suggest which debt to clear first.'}</p>${err('apr')}</div>` : ''}
     ${f.isNew ? '' : `<div class="field check">
       <label class="label" for="a-check">Check against your bank</label>
-      <div class="amount-wrap small"><span class="pound">£</span><input id="a-check" name="checkText" class="input bare" inputmode="decimal" placeholder="${isCard ? 'Owed now, from your bank app' : 'Balance now, from your bank app'}" value="${esc(f.checkText)}"></div>
+      <div class="amount-wrap small"><span class="pound">£</span><input id="a-check" name="checkText" class="input bare" inputmode="decimal" placeholder="${isOwed ? 'Owed now, from your bank app' : 'Balance now, from your bank app'}" value="${esc(f.checkText)}"></div>
       <div class="check-line" id="check-line">${checkLine()}</div>
     </div>`}
     <div class="sheet-actions">
@@ -973,12 +1187,16 @@ function saveAccount() {
   if (f.last4 && !/^\d{4}$/.test(f.last4)) e.last4 = 'Last 4 digits should be 4 numbers.';
   const due = f.dueDay ? Number(f.dueDay) : null;
   if (f.dueDay && !(due >= 1 && due <= 31)) e.dueDay = 'Due day should be 1 to 31.';
+  const apr = f.aprText ? Number(String(f.aprText).replace('%', '')) : null;
+  if (f.aprText && !(apr >= 0 && apr < 100)) e.apr = 'Enter the rate as a number, like 9.9.';
   S.errors = e;
   if (Object.keys(e).length) { renderSheet(); return; }
   const isCard = f.type === 'credit';
+  const isOwed = D.isDebt({ type: f.type });
   const data = {
     name: f.name.trim(), bank: f.bank.trim(), owner: f.owner, type: f.type,
-    openingBalance: isCard ? -opening : opening,
+    openingBalance: isOwed ? -opening : opening,
+    apr: isOwed && apr !== null ? apr : null,
     openingDate: f.openingDate || D.monthStart(S.month),
     creditLimit: isCard && limit ? limit : null,
     last4: isCard ? f.last4 || '' : '',
@@ -1004,6 +1222,132 @@ function addAdjustment(diff) {
   S.form.checkText = '';
   renderSheet();
   toast(`Adjusted ${a.name} by ${D.money(Math.abs(diff))}`);
+}
+
+// ----- bill -----
+function billForm(b, seed) {
+  if (b) {
+    const g = D.groupOf(b.categoryId);
+    return { isNew: false, id: b.id, kind: b.kind || 'bill', name: b.name || '', amountText: b.amount ? poundsText(b.amount) : '', varies: !!b.varies,
+      freq: b.freq || 'monthly', dueDay: b.dueDay ? String(b.dueDay) : '', dueMonth: Number(b.dueMonth) || Number(D.todayISO().slice(5, 7)),
+      accountId: b.accountId || '', toAccountId: b.toAccountId || '', groupId: g ? g.id : 'bills', categoryId: b.categoryId || '', shop: b.shop || '', archived: !!b.archived };
+  }
+  const f = { isNew: true, id: fb.newId('bills'), kind: 'bill', name: '', amountText: '', varies: false, freq: 'monthly', dueDay: '',
+    dueMonth: Number(D.todayISO().slice(5, 7)), accountId: (activeAccounts().find((a) => D.isSpendable(a)) || {}).id || '', toAccountId: '', groupId: 'bills', categoryId: '', shop: '' };
+  if (seed) {
+    Object.assign(f, { name: seed.name, amountText: poundsText(seed.amount), varies: seed.varies, dueDay: String(seed.dueDay), shop: seed.name, seedKey: seed.key });
+    if (activeAccounts().some((a) => a.id === seed.accountId)) f.accountId = seed.accountId;
+    const g = D.groupOf(seed.categoryId);
+    if (g) { f.groupId = g.id; f.categoryId = seed.categoryId; }
+  }
+  return f;
+}
+
+function sheetBill() {
+  const f = S.form;
+  const fromAccs = activeAccounts().filter((a) => !D.isDebt(a));
+  const debtAccs = activeAccounts().filter((a) => D.isDebt(a));
+  const chips = (list, field) => (list.length
+    ? `<div class="chips">${list.map((a) => `<button type="button" class="chip acc${f[field] === a.id ? ' on' : ''}" data-act="pick-account" data-field="${field}" data-id="${a.id}">${ownerDot(a.owner)}${esc(a.name)}</button>`).join('')}</div>`
+    : `<p class="muted small">${field === 'toAccountId' ? 'Add the card or loan in Accounts first.' : 'Add an account first.'}</p>`);
+  const g = D.groupById(f.groupId);
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const used = !f.isNew && S.txns.some((t) => t.billId === f.id);
+  return `<div class="sheet-head"><h2 class="h2" id="sheet-title">${f.isNew ? 'New bill' : 'Edit bill'}</h2><button type="button" class="icon-btn" data-act="sheet-close" aria-label="Close">${icon('x', 22)}</button></div>
+    <div class="segs two" role="group" aria-label="Kind"><button type="button" class="seg${f.kind === 'bill' ? ' on' : ''}" data-act="bill-kind" data-k="bill">Bill</button><button type="button" class="seg${f.kind === 'repayment' ? ' on' : ''}" data-act="bill-kind" data-k="repayment">Card or loan repayment</button></div>
+    <div class="field"><label class="label" for="b-name">Name</label><input id="b-name" name="name" class="input" maxlength="40" placeholder="${f.kind === 'bill' ? 'e.g. Rent, Octopus, Netflix' : 'e.g. Car finance'}" value="${esc(f.name)}" ${f.isNew && !f.seedKey ? 'data-autofocus' : ''}>${err('name')}</div>
+    <div class="field"><label class="label" for="b-amount">${f.varies ? 'Usual amount' : 'Amount'}</label><div class="amount-wrap small"><span class="pound">£</span><input id="b-amount" name="amountText" class="input bare" inputmode="decimal" placeholder="0.00" value="${esc(f.amountText)}"></div>${err('amount')}</div>
+    <button type="button" class="toggle-row" data-act="bill-varies" aria-pressed="${f.varies}"><span class="entry-main"><span class="entry-title">The amount changes</span><span class="entry-sub">Like energy or water: Kudukka uses the average of the last 3 payments</span></span><span class="switch${f.varies ? ' on' : ''}" aria-hidden="true"></span></button>
+    <div class="field"><span class="label">How often</span><div class="segs two" role="group" aria-label="How often"><button type="button" class="seg${f.freq === 'monthly' ? ' on' : ''}" data-act="bill-freq" data-f="monthly">Every month</button><button type="button" class="seg${f.freq === 'yearly' ? ' on' : ''}" data-act="bill-freq" data-f="yearly">Once a year</button></div></div>
+    ${f.freq === 'yearly' ? `<div class="field"><span class="label">Month</span><div class="chips">${months.map((m, i) => `<button type="button" class="chip${f.dueMonth === i + 1 ? ' on' : ''}" data-act="bill-month" data-m="${i + 1}">${m}</button>`).join('')}</div></div>` : ''}
+    <div class="field"><label class="label" for="b-day">Day it goes out</label><input id="b-day" name="dueDay" class="input short" inputmode="numeric" maxlength="2" placeholder="1–31" value="${esc(f.dueDay)}">${err('dueDay')}</div>
+    <div class="field"><span class="label">Paid from</span>${chips(fromAccs, 'accountId')}${err('accountId')}</div>
+    ${f.kind === 'repayment' ? `<div class="field"><span class="label">Pays off</span>${chips(debtAccs, 'toAccountId')}${err('toAccountId')}</div>` : `
+    <div class="field"><span class="label">Category</span><div class="chips">${D.spendGroups().map((x) => `<button type="button" class="chip grp-chip${f.groupId === x.id ? ' on' : ''}" style="--c:${x.color}" data-act="pick-group" data-id="${x.id}">${icon(x.icon, 16)}${esc(x.name)}</button>`).join('')}</div>
+      ${g ? `<div class="chips sub">${D.visibleSubs(g).map((s) => `<button type="button" class="chip${f.categoryId === s.id ? ' on' : ''}" data-act="pick-cat" data-id="${s.id}">${esc(s.name)}</button>`).join('')}</div>` : ''}${err('categoryId')}</div>
+    <div class="field"><label class="label" for="b-shop">Shop name on your entries</label><input id="b-shop" name="shop" class="input" maxlength="40" placeholder="Same as the name" value="${esc(f.shop)}">
+      <p class="hint">Entries with this shop name count as this bill being paid.</p></div>`}
+    <div class="sheet-actions">
+      ${f.isNew ? '' : used || f.archived
+        ? `<button type="button" class="btn btn-ghost" data-act="archive-bill">${f.archived ? 'Restart' : 'Stop bill'}</button>`
+        : `<button type="button" class="btn btn-danger" data-act="delete-bill" aria-label="Delete">${icon('trash', 18)}</button>`}
+      <button type="button" class="btn btn-primary grow" data-act="save-bill">${f.isNew ? 'Add bill' : 'Save'}</button>
+    </div>`;
+}
+
+function saveBill() {
+  const f = S.form;
+  const e = {};
+  if (!f.name.trim()) e.name = 'Give it a name.';
+  const amount = evaluateToPence(f.amountText);
+  if (amount === null || amount <= 0) e.amount = 'Enter the amount.';
+  const day = Number(f.dueDay);
+  if (!(day >= 1 && day <= 31)) e.dueDay = 'Enter a day from 1 to 31.';
+  if (!f.accountId) e.accountId = 'Choose the account it comes out of.';
+  if (f.kind === 'repayment' && !f.toAccountId) e.toAccountId = 'Choose the card or loan it pays.';
+  S.errors = e;
+  if (Object.keys(e).length) { renderSheet(); return; }
+  const data = {
+    name: f.name.trim(), kind: f.kind, amount, varies: !!f.varies, freq: f.freq, dueDay: day,
+    dueMonth: f.freq === 'yearly' ? f.dueMonth : null, accountId: f.accountId,
+    toAccountId: f.kind === 'repayment' ? f.toAccountId : null,
+    categoryId: f.kind === 'bill' ? f.categoryId || null : null,
+    shop: f.kind === 'bill' ? (f.shop || f.name).trim() : '',
+  };
+  if (f.isNew) data.archived = false;
+  const { isNew, id } = f;
+  closeSheet();
+  fb.saveDoc('bills', id, data, isNew).catch(() => toast("Couldn't save the bill. Check your connection."));
+  toast(isNew ? `${data.name} added` : 'Bill saved');
+}
+
+// Opens a new entry already filled in from a bill.
+function payBillForm(b, due) {
+  const today = D.todayISO();
+  const f = newEntryForm(b.kind === 'repayment' ? 'transfer' : 'spend');
+  f.amountText = poundsText(D.billExpected(b, S.txns));
+  if (activeAccounts().some((a) => a.id === b.accountId)) f.accountId = b.accountId;
+  if (b.kind === 'repayment') f.toAccountId = b.toAccountId;
+  const cat = D.categoryById(b.categoryId);
+  if (cat) { f.categoryId = b.categoryId; f.groupId = cat.group ? cat.group.id : ''; }
+  f.shop = b.kind === 'bill' ? (b.shop || b.name) : '';
+  f.shopApplied = true;
+  f.note = b.kind === 'repayment' ? b.name : '';
+  f.date = due && due < today ? due : today;
+  f.billId = b.id;
+  f.templates = [];
+  return f;
+}
+
+// ----- payday and expected pay -----
+function paydayPreview() {
+  const day = Number(S.form.day);
+  if (!(day >= 1 && day <= 31)) return '';
+  const ex = D.moneyMonth(D.todayISO(), day);
+  return `Right now that's ${monthName(ex.label)}'s money: ${winLabel(ex)}.`;
+}
+
+function sheetPayday() {
+  const f = S.form;
+  return `<div class="sheet-head"><h2 class="h2" id="sheet-title">Payday</h2><button type="button" class="icon-btn" data-act="sheet-close" aria-label="Close">${icon('x', 22)}</button></div>
+    <p class="muted">The day your main pay arrives. Pay on this day covers the next month, so the plan runs from payday to the day before the next one.</p>
+    <div class="field"><label class="label" for="p-day">Day of the month</label><input id="p-day" name="day" class="input short" inputmode="numeric" maxlength="2" value="${esc(f.day)}" data-autofocus>${err('day')}</div>
+    <p class="hint block" id="payday-preview">${paydayPreview()}</p>
+    <div class="sheet-actions"><button type="button" class="btn btn-primary grow" data-act="save-payday">Save</button></div>`;
+}
+
+function sheetExpected() {
+  const f = S.form;
+  const p = currentPlan();
+  const avg = D.expectedIncome(S.txns, S.accounts, p.win, payday());
+  const row = (k) => `<div class="field"><label class="label" for="x-${k}">${D.PEOPLE[k].name}${k === 'joint' ? ' (joint accounts)' : ''}</label>
+    <div class="amount-wrap small"><span class="pound">£</span><input id="x-${k}" name="x_${k}" class="input bare" inputmode="decimal" value="${esc(f[`x_${k}`])}"></div>
+    <span class="hint">${D.money(p.received[k] || 0)} in so far · recent average ${D.money(avg[k] || 0)}${avg.months ? ` (${avg.months} ${avg.months === 1 ? 'month' : 'months'})` : ''}</span></div>`;
+  return `<div class="sheet-head"><h2 class="h2" id="sheet-title">Pay for ${monthName(p.win.label)}</h2><button type="button" class="icon-btn" data-act="sheet-close" aria-label="Close">${icon('x', 22)}</button></div>
+    <p class="muted">How much you each expect for the whole money month (${winLabel(p.win)}). Sree's pay varies, so this starts from his recent average. Change it if you know better.</p>
+    ${row('sree')}${row('sha')}${S.accounts.some((a) => a.owner === 'joint' && !a.archived) ? row('joint') : ''}
+    ${err('x')}
+    <div class="sheet-actions"><button type="button" class="btn btn-ghost" data-act="reset-expected">Use averages</button><button type="button" class="btn btn-primary grow" data-act="save-expected">Save</button></div>`;
 }
 
 // ----- filters -----
@@ -1227,6 +1571,8 @@ document.addEventListener('click', async (ev) => {
       break;
     case 'nav':
       if (S.view === 'entries' && el.dataset.v !== 'entries') S.search = blankSearch();
+      if (el.closest('#nav')) S.backTo = null; else if (['bills', 'plan', 'trips', 'categories'].includes(el.dataset.v) && !['bills', 'plan'].includes(S.view)) S.backTo = S.view;
+      if (el.dataset.v === 'bills' && S.view !== 'bills') { S.billsOffset = 0; S.billsDay = null; }
       S.view = el.dataset.v; S.viewArg = null; window.scrollTo(0, 0); renderMain(); renderNav();
       break;
     case 'open-trip': S.view = 'trip'; S.viewArg = el.dataset.id; window.scrollTo(0, 0); renderMain(); renderNav(); break;
@@ -1296,6 +1642,77 @@ document.addEventListener('click', async (ev) => {
     case 'edit-income': { const s = D.incomeSources(true).find((x) => x.id === el.dataset.id); if (s) openSheet('income', { isNew: false, id: s.id, name: s.name, hidden: !!s.hidden, order: s.order }); break; }
     case 'i-hide': f.hidden = !f.hidden; renderSheet(); break;
     case 'save-income': saveIncome(); break;
+    case 'bills-win': S.billsOffset = Math.max(0, Math.min(2, S.billsOffset + Number(el.dataset.d))); S.billsDay = null; renderMain(); break;
+    case 'bills-mode': S.billsMode = el.dataset.m; S.billsDay = null; renderMain(); break;
+    case 'cal-day': S.billsDay = S.billsDay === el.dataset.d ? null : el.dataset.d; renderMain(); break;
+    case 'add-bill': openSheet('bill', billForm(null)); break;
+    case 'edit-bill': { const b = billById(el.dataset.id); if (b) openSheet('bill', billForm(b)); break; }
+    case 'bill-kind': f.kind = el.dataset.k; S.errors = {}; renderSheet(); break;
+    case 'bill-varies': f.varies = !f.varies; renderSheet(); break;
+    case 'bill-freq': f.freq = el.dataset.f; renderSheet(); break;
+    case 'bill-month': f.dueMonth = Number(el.dataset.m); renderSheet(); break;
+    case 'save-bill': saveBill(); break;
+    case 'archive-bill': {
+      const id = f.id; const archived = !f.archived;
+      closeSheet();
+      fb.saveDoc('bills', id, { archived }, false);
+      toast(archived ? 'Bill stopped. Its past payments stay.' : 'Bill restarted');
+      break;
+    }
+    case 'delete-bill': {
+      const b = billById(f.id);
+      const { id, ...rest } = b;
+      closeSheet();
+      fb.removeDoc('bills', id);
+      toast('Bill deleted', () => fb.restoreDoc('bills', id, rest));
+      break;
+    }
+    case 'pay-bill': { const b = billById(el.dataset.id); if (b) { openSheet('entry', payBillForm(b, el.dataset.due)); } break; }
+    case 'add-detected': {
+      const found = D.detectBills(S.txns, S.bills, D.todayISO(), settings().dismissedBills || []).find((x) => x.key === el.dataset.k);
+      if (found) openSheet('bill', billForm(null, found));
+      break;
+    }
+    case 'dismiss-detected': {
+      const list = [...new Set([...(settings().dismissedBills || []), el.dataset.k])];
+      fb.saveHouseholdSettings({ ...settings(), dismissedBills: list }).catch(() => toast("Couldn't save. Check your connection."));
+      toast('OK, it won’t be suggested again');
+      break;
+    }
+    case 'open-payday': openSheet('payday', { day: String(payday()) }); break;
+    case 'save-payday': {
+      const day = Number(f.day);
+      if (!(day >= 1 && day <= 31)) { S.errors = { day: 'Enter a day from 1 to 31.' }; renderSheet(); break; }
+      closeSheet();
+      fb.saveHouseholdSettings({ ...settings(), payday: day }).catch(() => toast("Couldn't save. Check your connection."));
+      toast(`Payday set to the ${ordinal(day)}`);
+      break;
+    }
+    case 'open-expected': {
+      const p = currentPlan();
+      openSheet('expected', { x_sree: poundsText(p.expected.sree), x_sha: poundsText(p.expected.sha), x_joint: poundsText(p.expected.joint) });
+      break;
+    }
+    case 'reset-expected': {
+      const p = currentPlan();
+      const avg = D.expectedIncome(S.txns, S.accounts, p.win, payday());
+      Object.assign(f, { x_sree: poundsText(avg.sree), x_sha: poundsText(avg.sha), x_joint: poundsText(avg.joint), reset: true });
+      renderSheet();
+      break;
+    }
+    case 'save-expected': {
+      const vals = {};
+      for (const k of ['sree', 'sha', 'joint']) {
+        const v = f[`x_${k}`] ? evaluateToPence(f[`x_${k}`]) : 0;
+        if (v === null || v < 0) { S.errors = { x: `Check ${D.PEOPLE[k].name}'s amount.` }; renderSheet(); return; }
+        vals[k] = v;
+      }
+      const label = currentPlan().win.label;
+      closeSheet();
+      fb.mergeDoc('plans', label, { expected: f.reset ? null : vals }).catch(() => toast("Couldn't save. Check your connection."));
+      toast('Expected pay saved');
+      break;
+    }
     case 'export': exportData().catch((e) => { console.error(e); toast("Couldn't export. Try again."); }); break;
     case 'person': S.person = el.dataset.p; renderMain(); break;
     case 'toggle-archived': S.showArchived = !S.showArchived; renderMain(); break;
@@ -1408,6 +1825,7 @@ document.addEventListener('input', (ev) => {
     if (box) box.innerHTML = shopSuggestions();
   }
   if (el.name === 'amountText') { updateCalc(); if (S.errors.amount) { delete S.errors.amount; const e = el.closest('.field').querySelector('.err'); if (e) e.remove(); } }
+  if (el.name === 'day' && S.sheet === 'payday') { const p = $('#payday-preview'); if (p) p.textContent = paydayPreview(); }
   if (el.name === 'checkText') { const l = $('#check-line'); if (l) l.innerHTML = checkLine(); }
   if (el.name === 'name' && S.errors.name) { delete S.errors.name; const e = el.closest('.field').querySelector('.err'); if (e) e.remove(); }
 });
@@ -1436,7 +1854,7 @@ fb.watchAuth((user) => {
   S.user = user;
   if (!user) {
     stopData();
-    S.household = null; S.householdLoaded = false; S.accounts = []; S.txns = []; S.trips = []; S.denied = false;
+    S.household = null; S.householdLoaded = false; S.accounts = []; S.txns = []; S.trips = []; S.bills = []; S.plans = {}; S.denied = false;
     D.setCategories([]);
   } else if (changed) {
     S.householdLoaded = false;

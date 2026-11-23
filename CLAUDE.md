@@ -6,9 +6,12 @@ Hosted on GitHub Pages at https://shifto2026-hub.github.io/kudukka (repo is publ
 ## Stack
 - Plain HTML, CSS and ES modules. No build step: files are served as they are.
 - Firebase 10.14.1 from the gstatic CDN: Google sign-in + Cloud Firestore (project `kudukka-6fcb4`, europe-west2).
-- All data lives under `households/home/…` (`accounts`, `transactions`, `categories`, `trips`); the household doc holds `members` (uid → role `sha` | `sree`).
+- All data lives under `households/home/…` (`accounts`, `transactions`, `categories`, `trips`, `bills`, `plans`); the household doc holds `members` (uid → role `sha` | `sree`) and `settings` (`payday`, `dismissedBills`). Always save the whole `settings` object.
 - `categories` docs hold only edits/additions on top of the defaults in `js/data.js`, keyed by the same ids (`food`, `food.groceries`, `income.sree`). Never delete default ids; hide them instead. Write with `fb.mergeDoc`.
-- Transactions may carry `shop`, `tripId`, `flag`, `flagFor`, `flagNote` (Phase 2). Phase 1 entries lack them: always treat missing as empty/false.
+- Transactions may carry `shop`, `tripId`, `flag`, `flagFor`, `flagNote` (Phase 2) and `billId` (Phase 3). Older entries lack them: always treat missing as empty/false.
+- Bills: `{ name, kind: bill|repayment, amount, varies, freq: monthly|yearly, dueDay, dueMonth, accountId, toAccountId, categoryId, shop, archived }`. A payment matches a bill by `billId`, else a transfer to the repayment's account, else the shop name.
+- Plans: `plans/{YYYY-MM}` holds `expected` pay per person (null = use the 3-month average).
+- Money month: pay on the payday covers the next month (payday 25 → '2026-11' runs 25 Oct–24 Nov). Account type `loan` is debt like `credit` (negative balance, optional `apr`).
 
 ## Files
 - `js/data.js` — pure helpers (people, categories, money, dates, balances, month totals). Keep it free of Firebase so it stays testable.
@@ -30,7 +33,8 @@ Hosted on GitHub Pages at https://shifto2026-hub.github.io/kudukka (repo is publ
 ## Plan
 Full plan: Claude Doc "Kudukka — app plan". Phase 1 = sign-in, PIN/Face ID, accounts and cards, entries, working month, Home summary.
 Phase 2 (live) = editable categories and income sources, trips, shop memory and repeat, search and filters, Ask flags, donut, CSV export.
-Next: Phase 3 (bills, calendar, next month's prediction, direct debit guard), Phase 4 (light optional pots, plan, reports, close the month), Phase 5 (CSV import).
+Phase 3 (live) = bills and repayments, bill spotting, calendar, loans with APR, payday plan (free to plan, safe to spend, savings and debt suggestions), direct debit guard.
+Next: Phase 4 (light optional pots, plan, reports, close the month), Phase 5 (CSV import).
 Design: Kudukka has its own look (autumn palette, Cormorant for the name, Nunito for money). It shares only Shifto's tech approach.
 
 ## Testing

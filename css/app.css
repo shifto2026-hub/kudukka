@@ -362,3 +362,82 @@ input[type="date"].input { -webkit-appearance: none; appearance: none; }
 .sub-row .input { flex-grow: 1; }
 .sub-row .btn-sm { flex-shrink: 0; height: 44px; }
 .sub-row.is-hidden .input { color: var(--quiet); text-decoration: line-through; }
+
+/* ---------- Phase 3: bills, calendar, payday plan ---------- */
+.input.short { width: 110px; }
+.row-gap { display: flex; gap: 8px; flex-wrap: wrap; }
+.pill-chip { display: inline-flex; align-items: center; gap: 3px; font-family: var(--sans); font-size: 11px; font-weight: 700; border-radius: 10px; padding: 2px 8px; white-space: nowrap; }
+.pill-chip.ok { background: #E4E6D5; color: var(--olive); }
+.pill-chip.warn { background: #F3E2C6; color: var(--warn); }
+.pill-chip.soon { background: #F2DCD2; color: var(--rust-dark); }
+.pill-chip.bad { background: var(--danger); color: #fff; }
+
+/* bill rows: the row opens the bill, the small button enters the payment */
+.bill-li { display: flex; align-items: center; gap: 6px; }
+.bill-li .entry { flex-grow: 1; min-width: 0; }
+.bill-li .entry-amt { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
+.bill-li.is-paid .entry-title, .bill-li.is-paid .entry-amt { color: var(--quiet); }
+.paid-btn { flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px; height: 36px; padding: 0 12px; border-radius: 18px; border: 1px solid var(--olive); background: var(--card); color: var(--olive); font-size: 13px; font-weight: 700; }
+.paid-btn:active { background: var(--olive); color: #fff; }
+
+/* window switcher */
+.win-nav { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.win-nav .icon-btn[disabled] { opacity: 0.3; }
+.win-title { display: flex; flex-direction: column; align-items: center; text-align: center; }
+.win-title b { font-family: var(--serif); font-size: 24px; font-weight: 600; line-height: 1.1; }
+
+/* suggestion and warning cards */
+.suggest-card { border: 2px dashed var(--travel); gap: 8px; }
+.suggest-card .entry-title { display: inline-flex; align-items: center; gap: 6px; white-space: normal; color: var(--travel); }
+.warn-card { border: 2px solid var(--warn); background: #FBF1E2; }
+.warn-card .entry-title { color: var(--warn); }
+
+/* calendar */
+.cal { padding: 14px; gap: 10px; }
+.cal-head, .cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.cal-head span { text-align: center; font-size: 11px; font-weight: 700; color: var(--quiet); }
+.cal-cell { aspect-ratio: 1 / 1.1; min-height: 42px; border-radius: 12px; border: 1px solid transparent; background: none; padding: 4px 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 3px; }
+.cal-cell.empty { pointer-events: none; }
+.cal-num { font-family: var(--num); font-weight: 700; font-size: 14px; line-height: 1; font-variant-numeric: lining-nums tabular-nums; }
+.cal-cell.today { border-color: var(--rust); }
+.cal-cell.today .cal-num { color: var(--rust); }
+.cal-cell.on { background: var(--ink); color: var(--cream); }
+.cal-cell.on .cal-num { color: var(--cream); }
+.cal-cell.pay { background: #E4E6D5; }
+.cal-cell.pay.on { background: var(--ink); }
+.cal-dots { display: flex; gap: 2px; align-items: center; flex-wrap: wrap; justify-content: center; }
+.cal-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+.cal-dot.due { background: var(--rust); }
+.cal-dot.ok { background: var(--olive); }
+.cal-dot.warn { background: var(--warn); }
+.cal-pay { color: var(--olive); display: inline-flex; }
+.cal-cell.on .cal-pay { color: var(--cream); }
+
+/* payday plan */
+.plan-head { gap: 8px; }
+.plan-head .big { margin-bottom: 2px; }
+.calc-list { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; }
+.calc-list li { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 2px 12px; padding: 10px 0; border-top: 1px solid var(--cream-2); font-size: 14px; }
+.calc-list li > .muted { flex-basis: 100%; }
+.calc-list b { font-family: var(--num); font-weight: 700; font-variant-numeric: lining-nums tabular-nums; }
+.link-row { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 12px; background: none; border: 0; padding: 0; text-align: left; font-size: 14px; }
+.link-row span { display: inline-flex; align-items: center; gap: 6px; color: var(--rust); font-weight: 600; }
+.link-row b { color: var(--ink); }
+.plan-head .link { display: inline-flex; align-items: center; gap: 4px; padding: 6px 0; }
+.safe-card { gap: 2px; border-left: 6px solid var(--olive); }
+.tips { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.tip { flex-direction: row; align-items: flex-start; gap: 12px; padding: 16px; }
+.tip > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.step-num { width: 28px; height: 28px; border-radius: 50%; background: var(--rust); color: #fff; font-family: var(--num); font-weight: 700; font-size: 14px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.warn-card .step-num { background: var(--warn); }
+.guard-status { display: flex; flex-direction: column; align-items: flex-end; text-align: right; gap: 2px; max-width: 48%; }
+.guard-status .small { white-space: normal; line-height: 1.25; }
+.link-card { text-align: left; align-items: flex-start; }
+.link-card:active { background: var(--cream-2); }
+.ok-text { color: var(--olive); font-weight: 600; }
+#payday-preview:empty { display: none; }
+/* bill and plan rows wrap instead of cutting names off */
+.bill-li .entry-title, .bill-li .entry-sub, .entries.wrap .entry-title, .entries.wrap .entry-sub { white-space: normal; overflow-wrap: anywhere; }
+.bill-li .entry { align-items: center; }
+.bill-li .entry-amt { font-size: 15px; }
+.paid-btn { height: 34px; padding: 0 10px; font-size: 12.5px; margin-right: 2px; }

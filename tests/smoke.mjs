@@ -294,6 +294,158 @@ expect(file && /kudukka-(entries|accounts)-\d{4}-\d{2}-\d{2}\.csv/.test(file.sug
 if (file) { const p = await file.path(); const txt = (await import('node:fs')).readFileSync(p, 'utf8'); expect(txt.includes('Tesco') || txt.includes('Account'), 'export CSV looks empty'); }
 
 console.log('Phase 2 checks done');
+
+// ======================= Phase 3 =======================
+try {
+const txt = async (sel) => (await page.locator(sel).first().textContent()) || '';
+
+// 1. A loan with an interest rate
+await go('accounts');
+await click('#main [data-act="add-account"]');
+await click('[data-act="acc-type"][data-t="loan"]');
+await page.fill('#a-name', 'Car finance');
+await page.fill('#a-open', '5000');
+await page.fill('#a-apr', '9.9');
+await click('[data-act="save-account"]');
+await page.waitForTimeout(150);
+expect(await page.locator('[data-act="edit-account"]:has-text("Car finance")').count() === 1, 'loan not listed in accounts');
+expect((await page.textContent('#main')).includes('9.9%'), 'loan APR not shown');
+await shot('30-accounts-loan');
+
+// 2. Past energy payments, so Kudukka can spot a regular bill
+await page.evaluate(async ({ acc, d1, d2 }) => {
+  const fs = await import('https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js');
+  const col = fs.collection({}, 'households', 'home', 'transactions');
+  const base = { type: 'spend', accountId: acc, toAccountId: null, categoryId: 'bills.energy', shop: 'Octopus Energy', note: '', calc: null, createdBy: 'sha', updatedBy: 'sha' };
+  await fs.setDoc(fs.doc(col, 'oct1'), { ...base, amount: 8500, date: d1, month: d1.slice(0, 7) });
+  await fs.setDoc(fs.doc(col, 'oct2'), { ...base, amount: 9200, date: d2, month: d2.slice(0, 7) });
+}, { acc: monzoId, d1: isoShift(-35), d2: isoShift(-65) });
+
+// 3. Bills page: empty, then add Rent
+await go('more');
+await click('[data-act="nav"][data-v="bills"]');
+await page.waitForSelector('.win-nav');
+expect(await page.locator('.suggest-card:has-text("Octopus Energy")').count() === 1, 'detected bill not suggested');
+await shot('31-bills-suggest');
+await click('[data-act="add-bill"]');
+await page.fill('#b-name', 'Rent');
+await page.fill('#b-amount', '1200');
+await page.fill('#b-day', '1');
+await click('[data-act="pick-account"][data-field="accountId"]:has-text("Monzo")');
+await click('[data-act="pick-cat"][data-id="bills.rent"]');
+await page.waitForTimeout(300); await shot('32-bill-sheet');
+await click('[data-act="save-bill"]');
+await page.waitForTimeout(150);
+expect(await page.locator('.bill-li:has(.entry-title:text-is("Rent"))').count() === 1, 'rent bill not listed');
+
+// validation: empty form shows errors
+await click('[data-act="add-bill"]');
+await click('[data-act="save-bill"]');
+expect(await page.locator('.sheet .err').count() >= 2, 'bill form did not show errors');
+// a repayment to the loan
+await click('[data-act="bill-kind"][data-k="repayment"]');
+await page.fill('#b-name', 'Car finance');
+await page.fill('#b-amount', '250');
+await page.fill('#b-day', '28');
+await click('[data-act="pick-account"][data-field="accountId"]:has-text("Monzo")');
+await click('[data-act="pick-account"][data-field="toAccountId"]:has-text("Car finance")');
+await click('[data-act="save-bill"]');
+await page.waitForTimeout(150);
+
+// 4. Accept the suggested bill
+await click('.suggest-card [data-act="add-detected"]');
+await page.waitForTimeout(150);
+expect((await page.inputValue('#b-name')) === 'Octopus Energy', 'suggested bill name not filled');
+expect(await page.locator('[data-act="bill-varies"][aria-pressed="true"]').count() === 1, 'suggested bill should be marked as varying');
+await click('[data-act="save-bill"]');
+await page.waitForTimeout(150);
+expect(await page.locator('.suggest-card:has-text("Octopus Energy")').count() === 0, 'suggestion still shown after adding');
+await shot('33-bills-list');
+
+// 5. Mark Rent as paid: opens a prefilled entry
+await click('.bill-li:has(.entry-title:text-is("Rent")) [data-act="pay-bill"]');
+await page.waitForTimeout(150);
+expect(['1200', '1200.00'].includes(await page.inputValue('#f-amount')), `pay-bill amount: ${await page.inputValue('#f-amount')}`);
+expect((await page.inputValue('#f-shop', { timeout: 3000 })) === 'Rent', 'pay-bill shop not filled');
+await page.waitForTimeout(300); await shot('34-pay-bill');
+await click('[data-act="save-entry"]');
+await page.waitForTimeout(200);
+expect(await page.locator('.bill-li.is-paid:has(.entry-title:text-is("Rent"))').count() === 1, 'rent not shown as paid');
+
+// 6. Repayment paid: a transfer to the loan
+await click('.bill-li:has-text("Car finance") [data-act="pay-bill"]');
+await page.waitForTimeout(150);
+expect(await page.locator('[data-act="entry-type"][data-t="transfer"].on').count() === 1, 'repayment did not open as a transfer');
+expect(await page.locator('[data-act="pick-account"][data-field="toAccountId"].on:has-text("Car finance")').count() === 1, 'repayment did not pick the loan');
+await click('[data-act="save-entry"]');
+await page.waitForTimeout(200);
+expect(await page.locator('.bill-li.is-paid:has-text("Car finance")').count() === 1, 'repayment not shown as paid');
+
+// 7. Calendar view
+await click('[data-act="bills-mode"][data-m="cal"]');
+await page.waitForSelector('.cal-grid');
+expect(await page.locator('.cal-cell.today').count() === 1, 'calendar has no today');
+expect(await page.locator('.cal-dot.due, .cal-dot.warn, .cal-dot.ok').count() >= 3, 'calendar dots missing');
+await click('.cal-cell:has(.cal-dot)');
+await page.waitForTimeout(100);
+expect(await page.locator('h3.day').count() === 1, 'calendar day not opened');
+await shot('35-bills-calendar');
+await click('[data-act="bills-mode"][data-m="list"]');
+await click('[data-act="bills-win"][data-d="1"]');
+expect((await txt('.win-title b')).includes("'s bills"), 'next window not shown');
+await click('[data-act="bills-win"][data-d="-1"]');
+
+// 8. Payday plan
+await go('more');
+await click('[data-act="nav"][data-v="plan"]');
+await page.waitForSelector('.plan-head');
+expect((await txt('.plan-head')).includes('Payday: 25th'), 'payday not shown as 25th');
+expect(await page.locator('.tips .tip').count() >= 1, 'no suggestions');
+expect(await page.locator('.guard-status').count() >= 1, 'direct debit guard missing');
+expect((await page.textContent('#main')).includes('Debts, highest interest first'), 'debts list missing');
+await shot('36-plan');
+// payday change
+await click('[data-act="open-payday"]');
+await page.fill('#p-day', '28');
+await page.waitForTimeout(100);
+expect((await txt('#payday-preview')).includes('28 Oct'), 'payday preview missing');
+await click('[data-act="save-payday"]');
+await page.waitForTimeout(150);
+expect((await txt('.plan-head')).includes('Payday: 28th'), 'payday did not change');
+await click('[data-act="open-payday"]');
+await page.fill('#p-day', '45');
+await click('[data-act="save-payday"]');
+expect(await page.locator('.sheet .err').count() === 1, 'bad payday accepted');
+await page.fill('#p-day', '25');
+await click('[data-act="save-payday"]');
+await page.waitForTimeout(150);
+// expected pay override
+await click('[data-act="open-expected"]');
+await page.fill('#x-sree', '3000');
+await page.waitForTimeout(300); await shot('37-expected');
+await click('[data-act="save-expected"]');
+await page.waitForTimeout(150);
+expect((await txt('.calc-list')).includes('~£3,000.00'), 'expected pay override not used');
+await click('[data-act="open-expected"]');
+await click('[data-act="reset-expected"]');
+await click('[data-act="save-expected"]');
+await page.waitForTimeout(150);
+expect(!(await txt('.calc-list')).includes('~£3,000.00'), 'expected pay did not reset');
+
+// 9. Home cards
+await go('home');
+await click('[data-act="person"][data-p="home"]');
+await page.waitForTimeout(100);
+expect(await page.locator('.link-card').count() === 2, 'plan cards missing on Home');
+await page.waitForTimeout(200); await shot('38-home-phase3');
+await click('.link-card[data-v="bills"]');
+await page.waitForSelector('.win-nav');
+await click('.subhead [data-act="nav"]');
+await page.waitForTimeout(100);
+expect(await page.locator('.link-card').count() === 2, 'back from bills did not return Home');
+
+console.log('Phase 3 checks done');
+} catch (e) { errors.push(`Phase 3 stopped: ${e.message.split('\n')[0]}`); await shot('99-fail'); }
 console.log('Home "left" figure:', big.trim());
 console.log(errors.length ? `ERRORS:\n${errors.join('\n')}` : 'No errors');
 await browser.close();

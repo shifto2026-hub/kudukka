@@ -151,4 +151,111 @@ assert.ok(csv[1].startsWith('2026-09-15,Spend,40.00,'), csv[1]);
 assert.ok(csv[1].includes('Thailand') && csv[1].includes('Ask Sree'));
 assert.ok(D.accountsCSV(accounts, txns).split('\r\n')[3].includes('Credit card'));
 
+// ======================= Phase 3 =======================
+// Money month: pay on the 25th covers the next month
+assert.deepEqual(D.moneyMonth('2026-11-23', 25), { label: '2026-11', start: '2026-10-25', end: '2026-11-24', nextPayday: '2026-11-25' });
+assert.deepEqual(D.moneyMonth('2026-11-25', 25), { label: '2026-12', start: '2026-11-25', end: '2026-12-24', nextPayday: '2026-12-25' });
+assert.deepEqual(D.moneyMonth('2026-12-31', 25), { label: '2027-01', start: '2026-12-25', end: '2027-01-24', nextPayday: '2027-01-25' });
+assert.deepEqual(D.moneyMonth('2027-02-27', 31), { label: '2027-02', start: '2027-01-31', end: '2027-02-27', nextPayday: '2027-02-28' });
+assert.deepEqual(D.moneyMonth('2027-02-28', 31), { label: '2027-03', start: '2027-02-28', end: '2027-03-30', nextPayday: '2027-03-31' });
+assert.equal(D.prevMoneyMonth(D.moneyMonth('2026-11-23')).label, '2026-10');
+assert.equal(D.daysBetween('2026-11-03', '2026-11-24'), 21);
+
+const win = D.moneyMonth('2026-11-03', 25); // 25 Oct – 24 Nov
+assert.equal(D.billDueIn({ dueDay: 3 }, win), '2026-11-03');
+assert.equal(D.billDueIn({ dueDay: 28 }, win), '2026-10-28');
+assert.equal(D.billDueIn({ dueDay: 31 }, win), '2026-10-31');
+assert.equal(D.billDueIn({ freq: 'yearly', dueMonth: 11, dueDay: 10 }, win), '2026-11-10');
+assert.equal(D.billDueIn({ freq: 'yearly', dueMonth: 12, dueDay: 10 }, win), null);
+assert.equal(D.billDueIn({ dueDay: 5, archived: true }, win), null);
+
+// A realistic household
+const P = [
+  { id: 'sha', owner: 'sha', type: 'current', openingBalance: 50000, openingDate: '2026-08-01' },
+  { id: 'sree', owner: 'sree', type: 'current', openingBalance: 20000, openingDate: '2026-08-01' },
+  { id: 'sav', owner: 'joint', type: 'savings', openingBalance: 30000, openingDate: '2026-08-01' },
+  { id: 'card', owner: 'sha', type: 'credit', openingBalance: 0, openingDate: '2026-08-01' },
+  { id: 'loan', owner: 'joint', type: 'loan', openingBalance: -500000, openingDate: '2026-08-01', apr: 9.9 },
+];
+const ptx = [];
+const add = (o) => ptx.push(t({ id: `p${ptx.length}`, createdMs: ptx.length, ...o }));
+['2026-08-25', '2026-09-25', '2026-10-25'].forEach((date) => add({ type: 'income', amount: 150000, date, accountId: 'sha', categoryId: 'income.sha' }));
+add({ type: 'income', amount: 120000, date: '2026-09-05', accountId: 'sree', categoryId: 'income.sree' });
+add({ type: 'income', amount: 100000, date: '2026-10-05', accountId: 'sree', categoryId: 'income.sree' });
+add({ type: 'income', amount: 40000, date: '2026-10-30', accountId: 'sree', categoryId: 'income.sree' });
+['2026-09-01', '2026-10-01', '2026-11-01'].forEach((date) => add({ type: 'spend', amount: 90000, date, accountId: 'sha', categoryId: 'bills.rent', shop: 'Landlord' }));
+[['2026-08-15', 8500], ['2026-09-15', 8700], ['2026-10-15', 8600]].forEach(([date, amount]) => add({ type: 'spend', amount, date, accountId: 'sree', categoryId: 'bills.energy', shop: 'Octopus' }));
+['2026-09-10', '2026-10-10'].forEach((date) => add({ type: 'transfer', amount: 15000, date, accountId: 'sha', toAccountId: 'loan' }));
+for (let i = 0; i < 12; i++) add({ type: 'spend', amount: 6000, date: D.addDays('2026-08-12', i * 7), accountId: 'sha', categoryId: 'food.groceries', shop: 'Tesco' });
+add({ type: 'spend', amount: 4000, date: '2026-10-28', accountId: 'card', categoryId: 'shopping.household', shop: 'Amazon' });
+const B = [
+  { id: 'rent', name: 'Rent', kind: 'bill', amount: 90000, freq: 'monthly', dueDay: 1, accountId: 'sha', shop: 'Landlord' },
+  { id: 'energy', name: 'Octopus', kind: 'bill', amount: 8000, varies: true, freq: 'monthly', dueDay: 15, accountId: 'sree', shop: 'Octopus' },
+  { id: 'loanrep', name: 'Car loan', kind: 'repayment', amount: 15000, freq: 'monthly', dueDay: 10, accountId: 'sha', toAccountId: 'loan' },
+  { id: 'cardrep', name: 'Amex', kind: 'repayment', amount: 5000, freq: 'monthly', dueDay: 20, accountId: 'sha', toAccountId: 'card' },
+  { id: 'carins', name: 'Car insurance', kind: 'bill', amount: 60000, freq: 'yearly', dueMonth: 11, dueDay: 20, accountId: 'sha', shop: 'Admiral' },
+];
+const pbal = (id) => D.balanceOf(P.find((a) => a.id === id), ptx);
+assert.equal(pbal('sha'), 128000);
+assert.equal(pbal('sree'), 254200);
+assert.equal(pbal('loan'), -470000);
+
+// Bills: expected amounts, paid status, price change, renewals
+assert.equal(D.billExpected(B[1], ptx), 8600, 'varies: average of last 3');
+assert.equal(D.billExpected(B[0], ptx), 90000);
+const wb = D.billsForWindow(B, ptx, win, '2026-11-03');
+assert.deepEqual(wb.map((x) => [x.bill.id, x.due, x.status]), [
+  ['rent', '2026-11-01', 'paid'], ['loanrep', '2026-11-10', 'due'], ['energy', '2026-11-15', 'due'],
+  ['cardrep', '2026-11-20', 'due'], ['carins', '2026-11-20', 'due'],
+]);
+assert.equal(D.billPriceChange(B[0], ptx), null);
+assert.deepEqual(D.billPriceChange({ ...B[0], amount: 85000 }, ptx), { from: 85000, to: 90000, diff: 5000, date: '2026-11-01' });
+assert.equal(D.billPriceChange(B[1], ptx), null, 'varying bills never flag');
+assert.deepEqual(D.renewalsSoon(B, '2026-11-03').map((r) => [r.bill.id, r.days]), [['carins', 17]]);
+assert.deepEqual(D.renewalsSoon(B, '2026-12-01'), []);
+assert.equal(D.matchesBill({ type: 'spend', shop: 'tesco', billId: 'rent' }, B[0]), true, 'a linked entry pays its bill');
+assert.equal(D.matchesBill({ type: 'spend', shop: 'Landlord', billId: 'other' }, B[0]), false);
+
+// Detection of regular charges
+const found = D.detectBills(ptx, [], '2026-11-03');
+assert.deepEqual(found.map((x) => [x.name, x.amount, x.varies, x.dueDay]), [['Landlord', 90000, false, 1], ['Octopus', 8600, true, 15]]);
+assert.deepEqual(D.detectBills(ptx, B, '2026-11-03'), [], 'existing bills are not suggested again');
+assert.deepEqual(D.detectBills(ptx, [], '2026-11-03', ['landlord']).map((x) => x.name), ['Octopus'], 'dismissed ones stay hidden');
+
+// Income: Sree's varying pay is estimated from recent money months
+assert.deepEqual(D.incomeIn(ptx, P, win), { sree: 40000, sha: 150000, joint: 0 });
+assert.deepEqual(D.expectedIncome(ptx, P, win), { sree: 110000, sha: 150000, joint: 0, months: 2 });
+assert.equal(D.weeklySpending(ptx, B, '2026-11-03'), 6333);
+
+// Debts
+assert.equal(D.monthsToClear(100000, 10000, 0), 10);
+assert.equal(D.monthsToClear(100000, 10000, 12), 11);
+assert.equal(D.monthsToClear(100000, 500, 12), null, 'payment below interest never clears');
+const pdebts = D.debtsList(P, ptx, B);
+assert.deepEqual(pdebts.map((d) => [d.account.id, d.owed, d.payment]), [['loan', 470000, 15000], ['card', 4000, 5000]]);
+
+// The payday plan
+const plan = D.paydayPlan({ txns: ptx, accounts: P, bills: B, today: '2026-11-03', payday: 25 });
+assert.equal(plan.win.label, '2026-11');
+assert.equal(plan.have, 382200, 'current accounts only');
+assert.equal(plan.saved, 30000);
+assert.equal(plan.coming, 70000, 'Sree: 110k expected − 40k received');
+assert.equal(plan.billsDue, 83600, 'loan 150 + energy 86 + insurance 600; card repayment not double counted');
+assert.equal(plan.cardsOwed, 4000);
+assert.equal(plan.free, 364600);
+assert.equal(plan.daysLeft, 22);
+assert.deepEqual(plan.suggestions.map((s) => [s.kind, s.amount]), [['spend', 19904], ['emergency', 70000], ['debt', 137348], ['goals', 137348]]);
+assert.equal(plan.safePerWeek, 6333);
+assert.ok(plan.suggestions[2].monthsSooner > 0);
+assert.equal(plan.emergencyTarget, 310800, '3 × monthly bills (rent 900 + energy 86 + insurance 50)');
+assert.deepEqual(plan.guard.map((g) => [g.account.id, g.due, g.after, g.status]), [['sha', 80000, 48000, 'ok'], ['sree', 8600, 245600, 'ok']]);
+// Override Sree's expected pay
+assert.equal(D.paydayPlan({ txns: ptx, accounts: P, bills: B, today: '2026-11-03', incomeOverride: { sree: 60000 } }).coming, 20000);
+// Short month: suggestions say so
+const short = D.paydayPlan({ txns: ptx, accounts: P.map((a) => (a.id === 'sha' || a.id === 'sree' ? { ...a, openingBalance: a.openingBalance - 500000 } : a)), bills: B, today: '2026-11-03' });
+assert.equal(short.suggestions[0].kind, 'short');
+assert.equal(short.safePerWeek, 0);
+assert.deepEqual(short.guard.map((g) => g.status), ['short', 'short']);
+assert.equal(short.guard[0].shortDate, '2026-11-10');
+
 console.log('All data and calculator tests passed');

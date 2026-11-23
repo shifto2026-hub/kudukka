@@ -13,13 +13,21 @@ export const ACCOUNT_TYPES = {
   isa: 'ISA',
   cash: 'Cash',
   credit: 'Credit card',
+  loan: 'Loan or finance',
 };
+
+// Cards and loans hold money owed: their balance is negative while something is owed.
+export const isDebt = (a) => !!a && (a.type === 'credit' || a.type === 'loan');
+// Money you can actually spend from (savings and ISAs are counted separately).
+export const isSpendable = (a) => !!a && (a.type === 'current' || a.type === 'cash');
+export const isSaving = (a) => !!a && (a.type === 'savings' || a.type === 'isa');
 
 // Phase 1 categories live in code with stable ids, so they can move to Firestore later.
 export const SPEND_GROUPS = [
   { id: 'bills', name: 'Bills', color: '#5C633E', icon: 'bills', subs: [
     ['rent', 'Rent or mortgage'], ['council', 'Council tax'], ['energy', 'Energy'], ['water', 'Water'],
     ['broadband', 'Broadband'], ['phones', 'Phones'], ['subs', 'Subscriptions'], ['insurance', 'Insurance'],
+    ['interest', 'Interest and fees'],
   ] },
   { id: 'food', name: 'Food', color: '#8FA382', icon: 'food', subs: [
     ['groceries', 'Groceries'], ['eatingout', 'Eating out'], ['takeaway', 'Takeaway'],
@@ -344,4 +352,281 @@ export function accountsCSV(accounts, txns) {
       a.last4 || '', a.dueDay || '', a.archived ? 'Yes' : '']);
   }
   return toCSV(rows);
+}
+
+// ======================= Phase 3: bills, loans and the payday plan =======================
+
+// ---------- dates for pay cycles ----------
+const daysIn = (y, m) => new Date(y, m, 0).getDate(); // m = 1..12
+const isoOf = (y, m, d) => `${y}-${pad(m)}-${pad(d)}`;
+const plusMonths = (y, m, by) => { const d = new Date(y, m - 1 + by, 1); return [d.getFullYear(), d.getMonth() + 1]; };
+const clampDay = (y, m, day) => Math.min(Math.max(1, Number(day) || 1), daysIn(y, m));
+export function addDays(iso, n) {
+  const [y, m, d] = iso.split('-').map(Number);
+  const dt = new Date(y, m - 1, d + n);
+  return isoOf(dt.getFullYear(), dt.getMonth() + 1, dt.getDate());
+}
+export function daysBetween(a, b) {
+  const t = (s) => { const [y, m, d] = s.split('-').map(Number); return Date.UTC(y, m - 1, d); };
+  return Math.round((t(b) - t(a)) / 864e5);
+}
+
+// The "money month": pay on the payday covers the NEXT month.
+// With payday 25: 25 Oct – 24 Nov is November's money.
+export function moneyMonth(iso, payday = 25) {
+  const [y, m, d] = iso.split('-').map(Number);
+  let [sy, sm] = [y, m];
+  if (d < clampDay(y, m, payday)) [sy, sm] = plusMonths(y, m, -1);
+  const start = isoOf(sy, sm, clampDay(sy, sm, payday));
+  const [ny, nm] = plusMonths(sy, sm, 1);
+  const nextPayday = isoOf(ny, nm, clampDay(ny, nm, payday));
+  return { label: `${ny}-${pad(nm)}`, start, end: addDays(nextPayday, -1), nextPayday };
+}
+export const nextMoneyMonth = (mm, payday = 25) => moneyMonth(mm.nextPayday, payday);
+export const prevMoneyMonth = (mm, payday = 25) => moneyMonth(addDays(mm.start, -1), payday);
+export function shortDate(iso) {
+  const [, m, d] = iso.split('-').map(Number);
+  return `${d} ${MONTHS[m - 1].slice(0, 3)}`;
+}
+
+// ---------- bills ----------
+// Bill doc: { name, kind:'bill'|'repayment', amount (pence), varies, freq:'monthly'|'yearly', dueDay, dueMonth,
+//             accountId (paid from), toAccountId (repayments: the card or loan), categoryId, shop, archived }
+export const BILL_FREQ = { monthly: 'Every month', yearly: 'Once a year' };
+export const billKey = (b) => shopKey(b.shop || b.name);
+
+// The bill's due date inside a window (a window spans at most two calendar months), or null.
+export function billDueIn(bill, win) {
+  if (!bill || bill.archived) return null;
+  const [sy, sm] = win.start.split('-').map(Number);
+  for (let k = 0; k <= 1; k++) {
+    const [y, m] = plusMonths(sy, sm, k);
+    if (bill.freq === 'yearly' && Number(bill.dueMonth) !== m) continue;
+    const due = isoOf(y, m, clampDay(y, m, bill.dueDay));
+    if (due >= win.start && due <= win.end) return due;
+  }
+  return null;
+}
+
+// An entry pays a bill when it's linked to it, or (for older entries) by shop name / transfer route.
+export function matchesBill(t, bill) {
+  if (t.billId) return t.billId === bill.id;
+  if (bill.kind === 'repayment') return t.type === 'transfer' && t.toAccountId === bill.toAccountId && (!bill.accountId || t.accountId === bill.accountId);
+  const k = billKey(bill);
+  return t.type === 'spend' && !!k && shopKey(t.shop || t.note) === k;
+}
+export const billPayments = (bill, txns) => txns.filter((t) => matchesBill(t, bill)).sort(newestFirst);
+
+// Fixed bills use their amount; bills that vary use the average of the last 3 payments.
+export function billExpected(bill, txns) {
+  if (!bill.varies) return bill.amount || 0;
+  const last = billPayments(bill, txns).slice(0, 3);
+  if (!last.length) return bill.amount || 0;
+  return Math.round(last.reduce((n, t) => n + t.amount, 0) / last.length);
+}
+export const billMonthly = (bill, txns) => (bill.freq === 'yearly' ? Math.round(billExpected(bill, txns) / 12) : billExpected(bill, txns));
+
+// Paid when a matching entry falls in the same money month (bills are often paid a few days early or late).
+export const billPaidIn = (bill, txns, win) => billPayments(bill, txns).find((t) => t.date >= win.start && t.date <= win.end) || null;
+
+// A fixed bill whose latest payment differs from its amount: the price changed.
+export function billPriceChange(bill, txns) {
+  if (bill.varies || !bill.amount) return null;
+  const last = billPayments(bill, txns)[0];
+  if (!last || last.amount === bill.amount) return null;
+  return { from: bill.amount, to: last.amount, diff: last.amount - bill.amount, date: last.date };
+}
+
+// Every bill due in a window with its status: 'paid', 'due' or 'late' (due date passed, no entry yet).
+export function billsForWindow(bills, txns, win, today) {
+  return bills.filter((b) => !b.archived).map((b) => {
+    const due = billDueIn(b, win);
+    if (!due) return null;
+    const paid = billPaidIn(b, txns, win);
+    const expected = billExpected(b, txns);
+    return {
+      bill: b, due, paid, expected, amount: paid ? paid.amount : expected,
+      status: paid ? 'paid' : today && due < today ? 'late' : 'due',
+      daysTo: today ? daysBetween(today, due) : null,
+    };
+  }).filter(Boolean).sort((a, b) => (a.due < b.due ? -1 : a.due > b.due ? 1 : 0));
+}
+
+// Yearly bills renewing within `days`: time to shop around.
+export function renewalsSoon(bills, today, days = 28) {
+  return bills.filter((b) => !b.archived && b.freq === 'yearly' && b.dueMonth).map((b) => {
+    const [y] = today.split('-').map(Number);
+    let next = isoOf(y, Number(b.dueMonth), clampDay(y, Number(b.dueMonth), b.dueDay));
+    if (next < today) next = isoOf(y + 1, Number(b.dueMonth), clampDay(y + 1, Number(b.dueMonth), b.dueDay));
+    return { bill: b, date: next, days: daysBetween(today, next) };
+  }).filter((r) => r.days <= days).sort((a, b) => a.days - b.days);
+}
+
+// Spot regular charges: the same shop once a month, in 2+ of the last ~4 months, at a similar amount.
+export function detectBills(txns, bills, today, dismissed = []) {
+  const taken = new Set(bills.filter((b) => !b.archived).map(billKey));
+  const from = monthOf(addDays(today, -125));
+  const groups = new Map();
+  for (const t of txns) {
+    if (t.type !== 'spend' || t.month < from || t.billId) continue;
+    const k = shopKey(t.shop || t.note);
+    if (!k || taken.has(k) || dismissed.includes(k)) continue;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(t);
+  }
+  const out = [];
+  for (const [k, list] of groups) {
+    const perMonth = {};
+    for (const t of list) perMonth[t.month] = (perMonth[t.month] || 0) + 1;
+    const months = Object.keys(perMonth);
+    if (months.length < 2 || Object.values(perMonth).some((n) => n > 1)) continue;
+    const amts = list.map((t) => t.amount).sort((a, b) => a - b);
+    const mid = amts[Math.floor(amts.length / 2)];
+    if (!mid || (amts.at(-1) - amts[0]) / mid > 0.3) continue;
+    const days = list.map((t) => Number(t.date.slice(8))).sort((a, b) => a - b);
+    const latest = [...list].sort(newestFirst)[0];
+    out.push({
+      key: k, name: (latest.shop || latest.note).trim(), amount: mid, varies: amts.at(-1) !== amts[0],
+      dueDay: days[Math.floor(days.length / 2)], accountId: latest.accountId, categoryId: latest.categoryId || null, months: months.length,
+    });
+  }
+  return out.sort((a, b) => b.months - a.months || b.amount - a.amount);
+}
+
+// ---------- income, spending and debts ----------
+export function incomeIn(txns, accounts, win) {
+  const acc = Object.fromEntries(accounts.map((a) => [a.id, a]));
+  const by = { sree: 0, sha: 0, joint: 0 };
+  for (const t of txns) {
+    if (t.type !== 'income' || t.date < win.start || t.date > win.end || !acc[t.accountId]) continue;
+    by[acc[t.accountId].owner] += t.amount;
+  }
+  return by;
+}
+
+// Expected pay for a money month: average of the last 3 money months that had any pay entered.
+// Copes with Sree's weekly or varying pay; the plan lets you override it.
+export function expectedIncome(txns, accounts, win, payday = 25) {
+  const sums = { sree: 0, sha: 0, joint: 0 };
+  let w = win;
+  let n = 0;
+  for (let i = 0; i < 3; i++) {
+    w = prevMoneyMonth(w, payday);
+    const got = incomeIn(txns, accounts, w);
+    if (!(got.sree + got.sha + got.joint)) continue;
+    n++;
+    for (const k of Object.keys(sums)) sums[k] += got[k];
+  }
+  const avg = (k) => (n ? Math.round(sums[k] / n) : 0);
+  return { sree: avg('sree'), sha: avg('sha'), joint: avg('joint'), months: n };
+}
+
+// Typical everyday spending per week: the last 12 weeks, leaving out bills and trip spending.
+export function weeklySpending(txns, bills, today, weeks = 12) {
+  const from = addDays(today, -weeks * 7);
+  const list = txns.filter((t) => t.type === 'spend' && t.date > from && t.date <= today && !t.tripId && !bills.some((b) => !b.archived && matchesBill(t, b)));
+  if (!list.length) return 0;
+  const first = list.reduce((m, t) => (t.date < m ? t.date : m), today);
+  const span = Math.max(1, Math.min(weeks, Math.ceil((daysBetween(first, today) + 1) / 7)));
+  return Math.round(list.reduce((n, t) => n + t.amount, 0) / span);
+}
+
+// Months to clear a debt at a monthly payment and yearly interest rate; null if it never clears.
+export function monthsToClear(owed, monthlyPayment, apr = 0) {
+  if (!owed || owed <= 0) return 0;
+  if (!monthlyPayment || monthlyPayment <= 0) return null;
+  const r = Number(apr) / 100 / 12;
+  if (!r) return Math.ceil(owed / monthlyPayment);
+  if (monthlyPayment <= owed * r) return null;
+  return Math.ceil(-Math.log(1 - (r * owed) / monthlyPayment) / Math.log(1 + r));
+}
+
+export function debtsList(accounts, txns, bills) {
+  return accounts.filter((a) => !a.archived && isDebt(a)).map((a) => {
+    const owed = Math.max(0, -balanceOf(a, txns));
+    const rep = bills.find((b) => !b.archived && b.kind === 'repayment' && b.toAccountId === a.id);
+    const payment = rep ? billExpected(rep, txns) : null;
+    return { account: a, owed, apr: Number(a.apr) || 0, payment, months: payment ? monthsToClear(owed, payment, a.apr) : null };
+  }).filter((d) => d.owed > 0)
+    // Highest interest first; equal rates → smallest balance first.
+    .sort((x, y) => y.apr - x.apr || x.owed - y.owed);
+}
+
+// Per account: can it cover the bills it pays before the next payday?
+export function debitGuard(accounts, txns, winBills) {
+  return accounts.filter((a) => !a.archived && !isDebt(a)).map((a) => {
+    const due = winBills.filter((b) => !b.paid && b.bill.accountId === a.id);
+    if (!due.length) return null;
+    const balance = balanceOf(a, txns);
+    let run = balance;
+    let shortDate = null;
+    for (const b of due) { run -= b.expected; if (run < 0 && !shortDate) shortDate = b.due; }
+    const total = due.reduce((n, b) => n + b.expected, 0);
+    const after = balance - total;
+    return { account: a, balance, due: total, after, count: due.length, lastDue: due.at(-1).due, shortDate, status: after < 0 ? 'short' : after < 5000 ? 'tight' : 'ok' };
+  }).filter(Boolean).sort((x, y) => x.after - y.after);
+}
+
+// ---------- the payday plan ----------
+// Money for the month = left in current/cash accounts + pay still to come − bills still due − card balances.
+// What's free is then suggested as: spending money until payday, emergency savings, extra off debt, the rest for goals.
+export const STARTER_EMERGENCY = 100000; // £1,000
+export function paydayPlan({ txns, accounts, bills = [], today = todayISO(), payday = 25, incomeOverride = null }) {
+  const win = moneyMonth(today, payday);
+  const live = accounts.filter((a) => !a.archived);
+  const accById = Object.fromEntries(accounts.map((a) => [a.id, a]));
+  const have = live.filter(isSpendable).reduce((n, a) => n + balanceOf(a, txns), 0);
+  const saved = live.filter(isSaving).reduce((n, a) => n + balanceOf(a, txns), 0);
+  const expected = incomeOverride ? { ...expectedIncome(txns, accounts, win, payday), ...incomeOverride } : expectedIncome(txns, accounts, win, payday);
+  const received = incomeIn(txns, accounts, win);
+  const comingBy = {};
+  for (const k of ['sree', 'sha', 'joint']) comingBy[k] = Math.max(0, (expected[k] || 0) - (received[k] || 0));
+  const coming = comingBy.sree + comingBy.sha + comingBy.joint;
+
+  const winBills = billsForWindow(bills, txns, win, today);
+  // Card balances are counted in full below, so repayment bills to cards aren't counted twice.
+  const unpaid = winBills.filter((b) => !b.paid && !(b.bill.kind === 'repayment' && accById[b.bill.toAccountId] && accById[b.bill.toAccountId].type === 'credit'));
+  const billsDue = unpaid.reduce((n, b) => n + b.expected, 0);
+  const cards = live.filter((a) => a.type === 'credit').map((a) => ({ account: a, owed: Math.max(0, -balanceOf(a, txns)) })).filter((c) => c.owed > 0);
+  const cardsOwed = cards.reduce((n, c) => n + c.owed, 0);
+  const free = have + coming - billsDue - cardsOwed;
+
+  const daysLeft = Math.max(1, daysBetween(today, win.end) + 1);
+  const weeksLeft = daysLeft / 7;
+  const typicalWeek = weeklySpending(txns, bills, today);
+  const essentials = bills.filter((b) => !b.archived && b.kind !== 'repayment').reduce((n, b) => n + billMonthly(b, txns), 0);
+  const emergencyTarget = Math.max(STARTER_EMERGENCY, essentials * 3);
+  const debts = debtsList(accounts, txns, bills).filter((d) => d.account.type === 'loan');
+
+  const suggestions = [];
+  let left = free;
+  if (free < 0) {
+    suggestions.push({ kind: 'short', amount: -free });
+  } else {
+    const spend = Math.min(left, Math.round(typicalWeek * weeksLeft));
+    suggestions.push({ kind: 'spend', amount: spend, perWeek: Math.round(spend / Math.max(1, weeksLeft)), typicalWeek });
+    left -= spend;
+    if (left > 0 && saved < emergencyTarget) {
+      // Below the £1,000 starter: fill that first. Above it: half of what's left, up to the target.
+      const put = saved < STARTER_EMERGENCY ? Math.min(left, STARTER_EMERGENCY - saved) : Math.min(Math.round(left / 2), emergencyTarget - saved);
+      if (put > 0) { suggestions.push({ kind: 'emergency', amount: put, saved, target: emergencyTarget }); left -= put; }
+    }
+    if (left > 0 && debts.length) {
+      const d = debts[0];
+      const put = Math.min(d.owed, Math.round(left / 2));
+      if (put > 0) {
+        const after = d.payment ? monthsToClear(d.owed - put, d.payment, d.apr) : null;
+        suggestions.push({ kind: 'debt', amount: put, debt: d, monthsSooner: d.months !== null && after !== null ? Math.max(0, d.months - after) : null });
+        left -= put;
+      }
+    }
+    if (left > 0) suggestions.push({ kind: 'goals', amount: left });
+  }
+  const spendTip = suggestions.find((s) => s.kind === 'spend');
+  return {
+    win, today, have, saved, expected, received, comingBy, coming, winBills, unpaid, billsDue, cards, cardsOwed, free,
+    daysLeft, weeksLeft, typicalWeek, essentials, emergencyTarget, debts, suggestions,
+    safePerWeek: spendTip ? spendTip.perWeek : 0,
+    guard: debitGuard(accounts, txns, winBills),
+  };
 }

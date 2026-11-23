@@ -78,5 +78,7 @@ export function saveDoc(name, id, data, isNew) {
 
 export const restoreDoc = (name, id, data) => setDoc(doc(col(name), id), data);
 // Create-or-update in one go (used for categories, whose defaults may not exist in Firestore yet).
+// Household-level settings (payday, dismissed bill suggestions). Always pass the whole settings object.
+export const saveHouseholdSettings = (settings) => setDoc(householdRef(), { settings, updatedAt: serverTimestamp() }, { merge: true });
 export const mergeDoc = (name, id, data) => setDoc(doc(col(name), id), { ...data, updatedAt: serverTimestamp() }, { merge: true });
 export const removeDoc = (name, id) => deleteDoc(doc(col(name), id));
