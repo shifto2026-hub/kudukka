@@ -446,6 +446,268 @@ expect(await page.locator('.link-card').count() === 2, 'back from bills did not 
 
 console.log('Phase 3 checks done');
 } catch (e) { errors.push(`Phase 3 stopped: ${e.message.split('\n')[0]}`); await shot('99-fail'); }
+
+// ======================= Phase 4 =======================
+const nowMonth = isoShift(0).slice(0, 7);
+const prevMonth = (() => { const [y, m] = nowMonth.split('-').map(Number); const d = new Date(y, m - 2, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; })();
+const toUK = (iso) => `${iso.slice(8)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
+const plain = (s) => s.replace(/[£,]/g, '').trim();
+const txt = async (sel) => (await page.locator(sel).first().textContent()) || '';
+try {
+  // 1. Close card on Home for last month
+  await go('home');
+  expect(await page.locator('.close-card').count() === 1, 'close-the-month card missing on Home');
+
+  // 2. Pots: emergency preset, add money, a dated goal
+  await go('more');
+  await click('[data-act="nav"][data-v="pots"]');
+  await page.waitForSelector('[data-act="add-pot"][data-preset="emergency"]');
+  await shot('40-pots-empty');
+  await click('[data-act="add-pot"][data-preset="emergency"]');
+  expect((await page.inputValue('#p-name')) === 'Emergency fund', 'emergency preset name');
+  expect(Number(await page.inputValue('#p-target')) >= 1000, 'emergency preset target');
+  await click('[data-act="pick-account"][data-field="accountId"]:has-text("Barclays")');
+  await click('[data-act="save-pot"]');
+  await page.waitForSelector('.pot-hero');
+  await click('[data-act="pot-move"][data-dir="add"]');
+  await page.fill('#f-amount', '150 + 50');
+  await page.fill('#pm-note', 'First step');
+  await click('[data-act="save-pot-move"]');
+  await page.waitForTimeout(150);
+  expect((await txt('.pot-hero .big')).includes('200.00'), 'pot balance after adding');
+  expect(await page.locator('[data-act="edit-pot-move"]:has-text("First step")').count() === 1, 'pot history row');
+  // take some out, then delete that move
+  await click('[data-act="pot-move"][data-dir="take"]');
+  await page.fill('#f-amount', '20');
+  await click('[data-act="save-pot-move"]');
+  await page.waitForTimeout(150);
+  expect((await txt('.pot-hero .big')).includes('180.00'), 'pot balance after taking out');
+  await click('[data-act="edit-pot-move"]:has-text("Taken out")');
+  await click('[data-act="delete-pot-move"]');
+  await page.waitForTimeout(150);
+  expect((await txt('.pot-hero .big')).includes('200.00'), 'pot balance after deleting a move');
+  await shot('41-pot-page');
+  // dated goal: US trip £7,000 by August next year
+  await click('.subhead [data-act="nav"]');
+  await click('[data-act="add-pot"][data-preset=""]');
+  await page.fill('#p-name', 'US trip');
+  await page.fill('#p-target', '7000');
+  const by = `${Number(nowMonth.slice(0, 4)) + 1}-08`;
+  await page.fill('#p-by', by);
+  await page.waitForTimeout(100);
+  expect((await txt('#pot-month-hint')).startsWith('About £'), `pot monthly hint: ${await txt('#pot-month-hint')}`);
+  await page.waitForTimeout(250); await shot('42-pot-sheet');
+  await click('[data-act="save-pot"]');
+  await page.waitForSelector('.pot-hero');
+  expect((await txt('.pot-hero')).includes('a month'), 'dated pot shows a monthly amount');
+  await click('[data-act="pot-move"][data-dir="add"]');
+  expect(Number(await page.inputValue('#f-amount')) > 0, 'add money prefilled with this month\'s share');
+  await click('[data-act="save-pot-move"]');
+  await page.waitForTimeout(150);
+  expect((await txt('.pot-hero')).includes('On track'), 'pot on track after adding the month\'s share');
+  await click('.subhead [data-act="nav"]');
+  await page.waitForTimeout(100);
+  expect(await page.locator('.pot-card').count() === 2, 'two pots listed');
+  expect((await page.textContent('#main')).includes('Where the money is'), 'pot account summary missing');
+  await shot('43-pots');
+  await go('home');
+  expect(await page.locator('.pots-strip .pot-mini').count() === 2, 'pots strip on Home');
+
+  // 3. Needs / wants switch in Categories
+  await go('more');
+  await click('[data-act="nav"][data-v="categories"]');
+  await click('[data-act="edit-group"][data-id="food"]');
+  const eatBtn = page.locator('.sub-row:has(input[value="Eating out"]) [data-act="g-sub-need"]');
+  expect((await eatBtn.textContent()).trim() === 'Want', 'eating out should start as a want');
+  await eatBtn.click();
+  expect((await eatBtn.textContent()).trim() === 'Need', 'need toggle did not switch');
+  await eatBtn.click();
+  await click('[data-act="save-group"]');
+  await page.waitForTimeout(150);
+
+  // 4. Reports
+  await go('more');
+  await click('[data-act="nav"][data-v="reports"]');
+  await page.waitForSelector('.win-nav');
+  expect((await page.textContent('#main')).includes('Needs, wants and saved'), '50/30/20 card missing');
+  expect(await page.locator('.grp-btn').count() >= 2, 'report categories missing');
+  expect(await page.locator('#main .entries .entry-title').count() >= 1, 'top shops or accounts missing');
+  await shot('44-report-month');
+  await click('[data-act="report-step"][data-d="-1"]');
+  expect((await txt('.win-title b')).includes(new Date(`${prevMonth}-01`).toLocaleString('en-GB', { month: 'long' })), 'report did not step back a month');
+  await click('[data-act="report-mode"][data-m="year"]');
+  await page.waitForSelector('.ychart');
+  expect(await page.locator('.ycol').count() === 12, 'year chart should have 12 months');
+  await shot('45-report-year');
+  await click(`.ycol[data-m="${nowMonth}"]`);
+  await page.waitForSelector('.win-nav [data-act="report-step"]');
+  await click('[data-act="person"][data-p="sree"]');
+  await page.waitForTimeout(100);
+  expect(!(await page.textContent('#main')).includes('Who spent'), 'Who spent shows only on Home');
+  await click('[data-act="person"][data-p="home"]');
+
+  // 5. Close last month (start two accounts earlier so they existed at the end of last month)
+  await go('home');
+  await click('.close-card');
+  await page.waitForSelector('.step-card');
+  expect((await txt('.step-card')).includes('nothing to check'), 'empty balance step should explain itself');
+  for (const name of ['Monzo', 'Barclays']) {
+    await go('accounts');
+    await click(`[data-act="edit-account"]:has-text("${name}")`);
+    await page.fill('#a-odate', `${prevMonth}-01`);
+    await click('[data-act="save-account"]');
+    await page.waitForTimeout(150);
+  }
+  await go('home');
+  await click('.close-card');
+  await page.waitForSelector('.step-card');
+  const monzoRow = page.locator('.chk-row:has-text("Monzo")');
+  const monzoShown = plain(await monzoRow.locator('.row-between b').textContent());
+  await monzoRow.locator('input').fill(monzoShown);
+  const barcRow = page.locator('.chk-row:has-text("Barclays")');
+  const barcShown = Number(plain(await barcRow.locator('.row-between b').textContent()));
+  await barcRow.locator('input').fill(String(barcShown + 10));
+  await click('[data-act="save-checks"]');
+  await page.waitForTimeout(150);
+  expect(await page.locator('.chk-row:has-text("Monzo") .ok').count() === 1, 'Monzo should match');
+  expect((await page.locator('.chk-row:has-text("Barclays")').textContent()).includes('Off by £10.00'), 'Barclays difference not shown');
+  await shot('46-close-checks');
+  await click('.chk-row:has-text("Barclays") [data-act="close-adjust"]');
+  await page.waitForTimeout(200);
+  expect(await page.locator('.chk-row:has-text("Barclays") .ok').count() === 1, 'adjustment did not fix Barclays');
+  // pay a bill that has no payment last month, if any
+  const unpaidBtn = page.locator('.step-card [data-act="pay-bill"]');
+  if (await unpaidBtn.count()) {
+    await unpaidBtn.first().click();
+    await page.waitForTimeout(100);
+    expect((await page.inputValue('#f-date')).startsWith(prevMonth), 'bill paid from the close screen should be dated last month');
+    await click('[data-act="save-entry"]');
+    await page.waitForTimeout(200);
+  }
+  await click('.step-card [data-act="report-month"]');
+  await page.waitForSelector('.win-nav');
+  await go('home');
+  await click('.close-card');
+  await page.waitForSelector('.step-card');
+  expect(await page.locator('.step-card.is-done').count() >= 2, 'close steps not ticked');
+  await shot('47-close-steps');
+  await click('[data-act="close-month"]');
+  await page.waitForSelector('.sealed');
+  await shot('48-closed');
+  await go('home');
+  expect(await page.locator('.close-card').count() === 0, 'close card should go once closed');
+  // entries in a closed month are locked
+  await click('#nav [data-act="add-entry"]');
+  await page.fill('#f-amount', '5');
+  await click('[data-act="pick-group"][data-id="food"]');
+  await click('[data-act="pick-cat"][data-id="food.groceries"]');
+  await page.fill('#f-date', `${prevMonth}-15`);
+  await page.waitForSelector('.lock-note');
+  await click('[data-act="save-entry"]');
+  expect((await txt('.sheet .err')).includes('closed'), 'saving into a closed month should be refused');
+  await page.waitForTimeout(250); await shot('49-locked-entry');
+  await click('.lock-note [data-act="reopen-month"]');
+  await page.waitForTimeout(200);
+  expect(await page.locator('.lock-note').count() === 0, 'reopen did not unlock');
+  await click('.sheet-head [data-act="sheet-close"]');
+  // close it again for the import test
+  await click('.close-card');
+  await click('[data-act="close-month"]');
+  await page.waitForSelector('.sealed');
+  console.log('Phase 4 checks done');
+} catch (e) { errors.push(`Phase 4 stopped: ${e.message.split('\n')[0]}`); await shot('99-fail-4'); }
+
+// ======================= Phase 5 =======================
+try {
+  const csv = [
+    'Date,Counter Party,Reference,Type,Amount (GBP),Balance (GBP),Spending Category',
+    `${toUK(isoShift(0))},OLD STYLE,REF 1,CARD,-12.34,100.00,`, // already in Kudukka
+    `${toUK(isoShift(-2))},TESCO STORES 3245,1234567890,CONTACTLESS,-23.50,100.00,`,
+    `${toUK(isoShift(-3))},SHELL STAPLEHURST,,CARD,-40.00,100.00,`,
+    `${toUK(isoShift(-4))},MYSTERY SHOP 77,,CARD,-5.00,100.00,`,
+    `${toUK(isoShift(-5))},MYSTERY SHOP 77,,CARD,-6.00,100.00,`,
+    `${toUK(isoShift(-6))},TFR 40-11-62 71234567 SAVINGS,,TRANSFER,-100.00,100.00,`,
+    `${toUK(isoShift(-1))},CARE HOME LTD,PAY 99887766,BACS,1500.00,100.00,`,
+    `15/${prevMonth.slice(5)}/${prevMonth.slice(0, 4)},BOOTS 1234,,CARD,-8.00,100.00,`,
+    'not a row,,,,,,',
+  ].join('\n');
+  const file = { name: 'statement.csv', mimeType: 'text/csv', buffer: Buffer.from(csv) };
+  await go('more');
+  await click('[data-act="nav"][data-v="import"]');
+  await page.waitForSelector('.file-btn.is-off');
+  await shot('50-import-start');
+  await click('[data-act="imp-acc"]:has-text("Monzo")');
+  await page.setInputFiles('#imp-file', file);
+  await page.waitForSelector('.imp-bar');
+  const heading = async (k) => ((await page.locator(`#imp-${k}`).count()) ? (await txt(`#imp-${k}`)).match(/\((\d+)\)/)[1] : '0');
+  expect(await heading('ready') === '3', `ready should be 3, got ${await heading('ready')}`);
+  expect(await heading('needs') === '2', `needs should be 2, got ${await heading('needs')}`);
+  expect(await heading('transfer') === '1', 'transfer group should be 1');
+  expect(await heading('duplicate') === '1', 'duplicate group should be 1');
+  expect(await heading('closed') === '1', 'closed-month group should be 1');
+  expect((await txt('.map-card')).includes('1 line'), 'unreadable line not reported');
+  expect((await page.textContent('#main')).includes('Tesco'), 'shop memory name not used');
+  expect(!/\d{6}/.test(await page.textContent('#main')), 'long numbers shown on the import screen');
+  await shot('51-import-review');
+  // choose a category for the mystery shop, applied to both rows
+  await click('#imp-needs + p + ul [data-act="imp-edit"]');
+  await page.waitForSelector('[data-act="ir-all"][aria-pressed="true"]');
+  await click('[data-act="pick-group"][data-id="shopping"]');
+  await click('[data-act="pick-cat"][data-id="shopping.household"]');
+  await page.fill('#ir-shop', 'Mystery Shop');
+  await page.waitForTimeout(250); await shot('52-import-row');
+  await click('[data-act="ir-save"]');
+  await page.waitForTimeout(100);
+  expect(await heading('needs') === '0', 'needs should be empty after choosing for all');
+  expect(await heading('ready') === '5', 'ready should be 5');
+  // turn the savings transfer into a transfer to Barclays
+  await click('#imp-transfer ~ ul [data-act="imp-edit"]');
+  await click('[data-act="pick-account"][data-field="toAccountId"]:has-text("Barclays")');
+  await click('[data-act="ir-save"]');
+  await page.waitForTimeout(100);
+  // untick one, tick it back
+  await click('[data-act="imp-tick"]');
+  expect((await txt('[data-act="imp-go"]')).includes('Import 5'), 'untick did not change the count');
+  await click('[data-act="imp-tick"]');
+  expect((await txt('[data-act="imp-go"]')).includes('Import 6'), `import count wrong: ${await txt('[data-act="imp-go"]')}`);
+  // column editor opens and keeps the result
+  await click('[data-act="imp-showmap"]');
+  expect(await page.locator('select[data-imp-map="date"]').count() === 1, 'column editor missing');
+  await page.waitForTimeout(150); await shot('53-import-columns');
+  await click('[data-act="imp-showmap"]');
+  await click('[data-act="imp-go"]');
+  await page.waitForSelector('.seal');
+  expect((await txt('.welcome-card .h2')).includes('6 entries added'), 'import done text');
+  await shot('54-import-done');
+  // the entries are there, with their categories and cleaned names
+  await click('[data-act="imp-see"]');
+  await page.fill('#q', 'mystery');
+  await page.waitForTimeout(300);
+  expect(await page.locator('#results [data-act="edit-entry"]').count() === 2, 'imported mystery shop entries not found');
+  expect((await page.textContent('#results')).includes('Household'), 'imported category not used');
+  await page.fill('#q', '');
+  // importing the same file again finds only duplicates
+  await go('more');
+  await click('[data-act="nav"][data-v="import"]');
+  await page.waitForSelector('#imp-file');
+  await page.setInputFiles('#imp-file', file);
+  await page.waitForSelector('.imp-bar');
+  expect(await heading('ready') === '0', `re-import should find nothing new, got ${await heading('ready')}`);
+  expect(Number(await heading('duplicate')) >= 6, 're-import duplicates');
+  expect(await page.locator('[data-act="imp-go"][disabled]').count() === 1, 'import button should be off');
+  await click('[data-act="imp-cancel"]');
+  // a card statement (spending shown as positive)
+  await click('[data-act="imp-acc"]:has-text("Amex")');
+  await page.setInputFiles('#imp-file', { name: 'amex.csv', mimeType: 'text/csv', buffer: Buffer.from(`Date,Description,Amount\n${toUK(isoShift(-1))},ARGOS LTD,15.00\n${toUK(isoShift(-1))},PAYMENT RECEIVED - THANK YOU,-100.00`) });
+  await page.waitForSelector('.imp-bar');
+  expect((await page.textContent('#imp-ready + ul')).includes('−£15.00'), 'card spending should read as money out');
+  expect(await heading('transfer') === '1', 'card payment should be a transfer to leave out');
+  await click('[data-act="imp-cancel"]');
+  // a file that isn't a statement
+  await page.setInputFiles('#imp-file', { name: 'notes.csv', mimeType: 'text/csv', buffer: Buffer.from('hello\nworld') });
+  await page.waitForSelector('#main .err');
+  console.log('Phase 5 checks done');
+} catch (e) { errors.push(`Phase 5 stopped: ${e.message.split('\n')[0]}`); await shot('99-fail-5'); }
 console.log('Home "left" figure:', big.trim());
 console.log(errors.length ? `ERRORS:\n${errors.join('\n')}` : 'No errors');
 await browser.close();

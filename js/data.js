@@ -76,6 +76,15 @@ export function defaultCategoryDocs() {
   return docs;
 }
 
+// Needs (essentials) vs wants, for the 50/30/20 view. Sha can switch any subcategory in Categories.
+const NEED_DEFAULTS = new Set(['food.groceries', 'car.fuel', 'car.insurance', 'car.servicing', 'car.roadcharges', 'car.parking',
+  'travel.transport', 'shopping.household', 'shopping.personal']);
+export function defaultNeed(id, groupId) {
+  if (id === 'bills.subs') return false;
+  if (groupId === 'bills' || String(id).startsWith('bills.')) return true;
+  return NEED_DEFAULTS.has(id);
+}
+
 const byOrder = (a, b) => (a.order ?? 0) - (b.order ?? 0) || String(a.name).localeCompare(String(b.name));
 
 export function buildCategoryIndex(rows = []) {
@@ -88,9 +97,10 @@ export function buildCategoryIndex(rows = []) {
   const byId = {};
   for (const s of all.filter((d) => d.kind === 'sub').sort(byOrder)) {
     const g = gById[s.parent] || gById.other;
-    const sub = { id: s.id, name: s.name, order: s.order ?? 0, hidden: !!s.hidden, parent: g.id };
+    const need = s.need === undefined || s.need === null ? defaultNeed(s.id, g.id) : !!s.need;
+    const sub = { id: s.id, name: s.name, order: s.order ?? 0, hidden: !!s.hidden, parent: g.id, need };
     g.subs.push(sub);
-    byId[s.id] = { id: s.id, name: s.name, hidden: sub.hidden, group: g };
+    byId[s.id] = { id: s.id, name: s.name, hidden: sub.hidden, group: g, need };
   }
   const incomes = all.filter((d) => d.kind === 'income').sort(byOrder).map((s) => ({ id: s.id, name: s.name, order: s.order ?? 0, hidden: !!s.hidden }));
   for (const s of incomes) byId[s.id] = { id: s.id, name: s.name, hidden: s.hidden, group: null };
@@ -628,5 +638,176 @@ export function paydayPlan({ txns, accounts, bills = [], today = todayISO(), pay
     daysLeft, weeksLeft, typicalWeek, essentials, emergencyTarget, debts, suggestions,
     safePerWeek: spendTip ? spendTip.perWeek : 0,
     guard: debitGuard(accounts, txns, winBills),
+  };
+}
+
+// ======================= Phase 4: pots, reports, closing the month =======================
+export const isNeed = (categoryId) => { const c = CAT.byId[categoryId]; return c ? !!c.need : false; };
+
+// Whole months from one YYYY-MM to another, counting both (Nov → Nov = 1, Nov → Jan = 3).
+export function monthsBetween(from, to) {
+  const [fy, fm] = from.split('-').map(Number);
+  const [ty, tm] = to.split('-').map(Number);
+  return (ty - fy) * 12 + (tm - fm) + 1;
+}
+
+// ---------- pots (light, optional) ----------
+// A pot is money set aside in the app; its moves add (+) or take out (−). It may say which account holds it.
+export const potMoves = (pot, moves) => moves.filter((m) => m.potId === pot.id).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : (b.createdMs || 0) - (a.createdMs || 0)));
+export const potBalance = (pot, moves) => moves.filter((m) => m.potId === pot.id).reduce((n, m) => n + (m.amount || 0), 0);
+
+// How a pot is doing. With a target month: the amount a month still needed (worked out from the start of this
+// month, so adding money now doesn't move the goalposts) and whether this month's share is in.
+export function potStatus(pot, moves, today = todayISO()) {
+  const month = monthOf(today);
+  const saved = potBalance(pot, moves);
+  const target = pot.target || 0;
+  const mine = moves.filter((m) => m.potId === pot.id);
+  const thisMonth = mine.filter((m) => monthOf(m.date) === month).reduce((n, m) => n + m.amount, 0);
+  const atStart = saved - thisMonth;
+  const pct = target ? Math.max(0, Math.min(1, saved / target)) : 0;
+  const out = { saved, target, left: Math.max(0, target - saved), pct, thisMonth, monthly: null, monthsLeft: null, state: 'open' };
+  if (target && saved >= target) return { ...out, state: 'done' };
+  if (!pot.byMonth) return out;
+  const monthsLeft = monthsBetween(month, pot.byMonth);
+  if (monthsLeft < 1) return { ...out, monthsLeft: 0, state: 'late' };
+  const monthly = Math.ceil(Math.max(0, target - atStart) / monthsLeft);
+  return { ...out, monthsLeft, monthly, state: thisMonth >= monthly ? 'ontrack' : 'behind' };
+}
+
+// Share money for goals between pots with a target month, soonest first, up to each one's monthly amount still due.
+export function potsPlan(pots, moves, amount, today = todayISO()) {
+  let left = Math.max(0, amount || 0);
+  return pots.filter((p) => !p.archived).map((p) => ({ pot: p, st: potStatus(p, moves, today) }))
+    .filter((x) => x.st.monthly && x.st.state === 'behind')
+    .sort((a, b) => (a.pot.byMonth < b.pot.byMonth ? -1 : 1))
+    .map(({ pot, st }) => {
+      const need = Math.max(0, st.monthly - st.thisMonth);
+      const put = Math.min(need, left);
+      left -= put;
+      return { pot, need, put };
+    });
+}
+
+// Per account that holds pots: its balance, what's set aside in pots, and what's free.
+export function potAccounts(pots, moves, accounts, txns) {
+  const out = [];
+  for (const a of accounts.filter((x) => !x.archived)) {
+    const mine = pots.filter((p) => !p.archived && p.accountId === a.id);
+    if (!mine.length) continue;
+    const inPots = mine.reduce((n, p) => n + potBalance(p, moves), 0);
+    const balance = balanceOf(a, txns);
+    out.push({ account: a, balance, inPots, free: balance - inPots });
+  }
+  return out;
+}
+
+// ---------- reports ----------
+const inPerson = (a, person) => !!a && (person === 'home' || a.owner === person);
+
+// Everything for one month's report, for Home, Sree or Sha.
+export function monthReport(txns, accounts, month, person = 'home', trips = []) {
+  const acc = Object.fromEntries(accounts.map((a) => [a.id, a]));
+  const s = monthStats(txns, accounts, month, person);
+  const prev = monthStats(txns, accounts, shiftMonth(month, -1), person);
+  // Usual spend per category: average of the 3 months before, counting only months with spending.
+  const avgByGroup = {};
+  let n = 0;
+  for (let i = 1; i <= 3; i++) {
+    const m = monthStats(txns, accounts, shiftMonth(month, -i), person);
+    if (!m.spend) continue;
+    n++;
+    for (const [g, v] of Object.entries(m.byGroup)) avgByGroup[g] = (avgByGroup[g] || 0) + v;
+  }
+  for (const g of Object.keys(avgByGroup)) avgByGroup[g] = Math.round(avgByGroup[g] / n);
+  let needs = 0;
+  let wants = 0;
+  const byAccount = {};
+  const shops = new Map();
+  const tripTotals = {};
+  for (const t of txns) {
+    if (t.month !== month || t.type !== 'spend' || !inPerson(acc[t.accountId], person)) continue;
+    if (isNeed(t.categoryId)) needs += t.amount; else wants += t.amount;
+    byAccount[t.accountId] = (byAccount[t.accountId] || 0) + t.amount;
+    const name = (t.shop || t.note || '').trim();
+    const k = shopKey(name);
+    if (k) { const cur = shops.get(k) || { name, amount: 0, count: 0 }; cur.amount += t.amount; cur.count++; shops.set(k, cur); }
+    if (t.tripId) tripTotals[t.tripId] = (tripTotals[t.tripId] || 0) + t.amount;
+  }
+  return {
+    month, ...s,
+    prev: { income: prev.income, spend: prev.spend, left: prev.left },
+    avgByGroup, avgMonths: n, needs, wants,
+    savedRate: s.income > 0 ? s.left / s.income : null,
+    byAccount: Object.entries(byAccount).map(([id, amount]) => ({ account: acc[id], amount })).filter((x) => x.account).sort((a, b) => b.amount - a.amount),
+    topShops: [...shops.values()].sort((a, b) => b.amount - a.amount).slice(0, 5),
+    trips: Object.entries(tripTotals).map(([id, amount]) => ({ trip: trips.find((t) => t.id === id), amount })).filter((x) => x.trip).sort((a, b) => b.amount - a.amount),
+  };
+}
+
+// A year at a glance: each month's in and out, category totals, savings rate, and each trip's cost that year.
+export function yearReport(txns, accounts, year, person = 'home', trips = []) {
+  const acc = Object.fromEntries(accounts.map((a) => [a.id, a]));
+  const months = [];
+  const byGroup = {};
+  let income = 0;
+  let spend = 0;
+  let needs = 0;
+  for (let i = 1; i <= 12; i++) {
+    const m = `${year}-${pad(i)}`;
+    const s = monthStats(txns, accounts, m, person);
+    months.push({ month: m, income: s.income, spend: s.spend, left: s.left });
+    income += s.income;
+    spend += s.spend;
+    for (const [g, v] of Object.entries(s.byGroup)) byGroup[g] = (byGroup[g] || 0) + v;
+  }
+  const tripTotals = {};
+  for (const t of txns) {
+    if (t.type !== 'spend' || !t.date.startsWith(`${year}-`) || !inPerson(acc[t.accountId], person)) continue;
+    if (isNeed(t.categoryId)) needs += t.amount;
+    if (t.tripId) tripTotals[t.tripId] = (tripTotals[t.tripId] || 0) + t.amount;
+  }
+  const active = months.filter((m) => m.income || m.spend);
+  return {
+    year, months, income, spend, left: income - spend, needs, wants: spend - needs, byGroup,
+    savedRate: income > 0 ? (income - spend) / income : null,
+    activeMonths: active.length,
+    avgSpend: active.length ? Math.round(spend / active.length) : 0,
+    trips: Object.entries(tripTotals).map(([id, amount]) => ({ trip: trips.find((t) => t.id === id), amount })).filter((x) => x.trip).sort((a, b) => b.amount - a.amount),
+  };
+}
+
+// ---------- closing the month ----------
+export const isClosed = (months, m) => !!(months && months[m] && months[m].closed);
+
+// What to look at before closing a calendar month.
+// closing = the month's doc ({ balanceChecks: { accountId: pence as the bank shows it } }).
+export function closeChecks({ month, txns, accounts, bills = [], closing = {} }) {
+  const end = monthEnd(month);
+  const start = monthStart(month);
+  const checks = closing.balanceChecks || {};
+  const accs = accounts.filter((a) => !a.archived && (a.openingDate || '0000') <= end).map((a) => {
+    const balance = balanceOf(a, txns, end);
+    const bank = checks[a.id];
+    const shown = isDebt(a) ? -balance : balance; // cards and loans are checked as "amount owed"
+    return { account: a, balance, shown, bank: bank ?? null, diff: bank === undefined || bank === null ? null : bank - shown };
+  });
+  const inMonth = txns.filter((t) => t.month === month);
+  const flagged = inMonth.filter((t) => t.flag);
+  const unsorted = inMonth.filter((t) => t.type === 'spend' && (!t.categoryId || t.categoryId === 'other.general'));
+  // Bills due that month without a payment from 5 days before the month to its end.
+  const win = { start, end };
+  const early = addDays(start, -5);
+  const unpaid = bills.filter((b) => !b.archived).map((b) => {
+    const due = billDueIn(b, win);
+    if (!due) return null;
+    const paid = billPayments(b, txns).find((t) => t.date >= early && t.date <= end);
+    return paid ? null : { bill: b, due, expected: billExpected(b, txns) };
+  }).filter(Boolean);
+  return {
+    month, start, end, accounts: accs,
+    checked: accs.filter((x) => x.diff === 0).length,
+    mismatched: accs.filter((x) => x.diff !== null && x.diff !== 0),
+    flagged, unsorted, unpaid, count: inMonth.length,
   };
 }

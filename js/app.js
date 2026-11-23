@@ -6,6 +6,7 @@ import * as D from './data.js';
 import { evaluateToPence, isSum } from './calc.js';
 import * as PIN from './pin.js';
 import { icon, POT_LOGO } from './icons.js';
+import * as CSV from './bankcsv.js';
 
 // ---------- small helpers ----------
 const $ = (sel) => document.querySelector(sel);
@@ -35,6 +36,12 @@ const S = {
   billsMode: 'list',
   billsDay: null,
   backTo: null,
+  pots: [],
+  potMoves: [],
+  months: {}, // 'YYYY-MM' → { closed, closedAt, closedBy, balanceChecks, reportSeen }
+  report: { mode: 'month', month: null, year: null },
+  closeDraft: {}, // account id → text typed on the close-the-month screen
+  imp: null, // bank statement import in progress
   view: 'home', // home | entries | accounts | more | trips | trip | categories
   viewArg: null, // trip id for the trip page
   person: 'home',
@@ -105,6 +112,9 @@ function startData() {
   unsubs.push(fb.watchCollection('trips', (rows) => { S.trips = rows; renderMain(); }, onErr));
   unsubs.push(fb.watchCollection('bills', (rows) => { S.bills = rows; renderMain(); }, onErr));
   unsubs.push(fb.watchCollection('plans', (rows) => { S.plans = Object.fromEntries(rows.map((r) => [r.id, r])); renderMain(); }, onErr));
+  unsubs.push(fb.watchCollection('pots', (rows) => { S.pots = rows; renderMain(); }, onErr));
+  unsubs.push(fb.watchCollection('potMoves', (rows) => { S.potMoves = rows.map((m) => ({ ...m, createdMs: m.createdAt && m.createdAt.toMillis ? m.createdAt.toMillis() : Date.now() })); renderMain(); }, onErr));
+  unsubs.push(fb.watchCollection('months', (rows) => { S.months = Object.fromEntries(rows.map((r) => [r.id, r])); renderMain(); if (S.sheet === 'entry') renderSheet(); }, onErr));
 }
 function stopData() {
   unsubs.forEach((u) => u && u());
@@ -299,7 +309,7 @@ function renderMain() {
   const main = $('#main');
   if (!main) return;
   const v = S.view;
-  const views = { home: viewHome, entries: viewEntries, accounts: viewAccounts, more: viewMore, trips: viewTrips, trip: viewTrip, categories: viewCategories, bills: viewBills, plan: viewPlan };
+  const views = { home: viewHome, entries: viewEntries, accounts: viewAccounts, more: viewMore, trips: viewTrips, trip: viewTrip, categories: viewCategories, bills: viewBills, plan: viewPlan, pots: viewPots, pot: viewPot, reports: viewReports, close: viewClose, import: viewImport };
   // Keep the search box focused (and its cursor) while results update underneath.
   const q = document.activeElement && document.activeElement.id === 'q' ? document.activeElement.selectionStart : null;
   main.innerHTML = header() + (views[v] || viewMore)();
@@ -308,7 +318,7 @@ function renderMain() {
 
 // A small back bar for the screens inside More.
 function subhead(title, back) {
-  if (S.backTo && S.backTo !== S.view && back !== 'trips') back = S.backTo;
+  if (S.backTo && S.backTo !== S.view && back !== 'trips' && back !== 'pots') back = S.backTo;
   return `<div class="subhead"><button type="button" class="icon-btn" data-act="nav" data-v="${back}" aria-label="Back">${icon('left', 22)}</button><h1 class="h2">${esc(title)}</h1></div>`;
 }
 
@@ -384,7 +394,7 @@ function viewHome() {
   const moved = S.person !== 'home' && (s.movedIn || s.movedOut)
     ? `<p class="moved">${s.movedOut ? `Moved to ${S.person === 'sree' ? 'Sha' : 'Sree'}: <b>${D.money(s.movedOut)}</b>` : ''}${s.movedIn && s.movedOut ? ' · ' : ''}${s.movedIn ? `Received from ${S.person === 'sree' ? 'Sha' : 'Sree'}: <b>${D.money(s.movedIn)}</b>` : ''}</p>`
     : '';
-  return `${monthPill()}${personSwitch()}${planCards()}${flagCard()}${tripCard()}
+  return `${monthPill()}${personSwitch()}${planCards()}${closeCard()}${flagCard()}${tripCard()}
     <section class="card hero">
       <span class="muted small">${label}</span>
       <span class="big" style="color:${accent}">${D.money(s.left)}</span>
@@ -399,6 +409,7 @@ function viewHome() {
       <h2 class="h3">Where it went</h2>
       ${s.spend ? donut(s.byGroup, s.spend) : `<p class="muted">No spending entered for ${D.monthLabel(S.month)} yet.</p>`}
     </section>
+    ${potsCard()}
     <section class="card">
       <div class="row-between"><h2 class="h3">Latest entries</h2>${recent.length ? '<button type="button" class="link" data-act="nav" data-v="entries">See all</button>' : ''}</div>
       ${recent.length ? `<ul class="entries">${recent.map(entryRow).join('')}</ul>` : `<p class="muted">Tap + to add your first entry for ${D.monthLabel(S.month)}.</p>`}
@@ -571,8 +582,12 @@ function viewMore() {
       <div class="me">${avatar(role, 52)}<div><b>${D.PEOPLE[role].name}</b><span class="muted small block">${esc(S.user.email)}</span></div></div>
     </section>
     <ul class="entries card tight">
-      <li><button type="button" class="entry" data-act="nav" data-v="plan"><span class="gicon plain">${icon('pot', 18)}</span><span class="entry-main"><span class="entry-title">Payday plan</span><span class="entry-sub">Free to plan, safe to spend, suggestions</span></span>${icon('right', 18)}</button></li>
+      <li><button type="button" class="entry" data-act="nav" data-v="plan"><span class="gicon plain">${icon('income', 18)}</span><span class="entry-main"><span class="entry-title">Payday plan</span><span class="entry-sub">Free to plan, safe to spend, suggestions</span></span>${icon('right', 18)}</button></li>
       <li><button type="button" class="entry" data-act="nav" data-v="bills"><span class="gicon plain">${icon('bills', 18)}</span><span class="entry-main"><span class="entry-title">Bills and repayments</span><span class="entry-sub">${liveBills().length ? `${liveBills().length} regular ${liveBills().length === 1 ? 'bill' : 'bills'}` : 'Rent, energy, loans and subscriptions'}</span></span>${icon('right', 18)}</button></li>
+      <li><button type="button" class="entry" data-act="nav" data-v="pots"><span class="gicon plain">${icon('pot', 18)}</span><span class="entry-main"><span class="entry-title">Pots</span><span class="entry-sub">${livePots().length ? `${livePots().length} ${livePots().length === 1 ? 'pot' : 'pots'} · ${D.money(livePots().reduce((n, p) => n + D.potBalance(p, S.potMoves), 0))}` : 'Optional: save for a holiday or yearly bills'}</span></span>${icon('right', 18)}</button></li>
+      <li><button type="button" class="entry" data-act="nav" data-v="reports"><span class="gicon plain">${icon('chart', 18)}</span><span class="entry-main"><span class="entry-title">Reports</span><span class="entry-sub">Month and year, by category, person and shop</span></span>${icon('right', 18)}</button></li>
+      <li><button type="button" class="entry" data-act="open-close" data-m=""><span class="gicon plain">${icon('check', 18)}</span><span class="entry-main"><span class="entry-title">Close the month</span><span class="entry-sub">Check balances, sort the last few, lock it</span></span>${icon('right', 18)}</button></li>
+      <li><button type="button" class="entry" data-act="nav" data-v="import"><span class="gicon plain">${icon('upload', 18)}</span><span class="entry-main"><span class="entry-title">Import a bank statement</span><span class="entry-sub">Add entries from a CSV file</span></span>${icon('right', 18)}</button></li>
       <li><button type="button" class="entry" data-act="nav" data-v="trips"><span class="gicon plain">${icon('travel', 18)}</span><span class="entry-main"><span class="entry-title">Trips</span><span class="entry-sub">${activeTrips().length ? `${activeTrips().length} ${activeTrips().length === 1 ? 'trip' : 'trips'}` : 'Track a holiday as one total'}</span></span>${icon('right', 18)}</button></li>
       <li><button type="button" class="entry" data-act="nav" data-v="categories"><span class="gicon plain">${icon('tag', 18)}</span><span class="entry-main"><span class="entry-title">Categories and income</span><span class="entry-sub">Rename, add, recolour or hide</span></span>${icon('right', 18)}</button></li>
       <li><button type="button" class="entry" data-act="export"><span class="gicon plain">${icon('download', 18)}</span><span class="entry-main"><span class="entry-title">Export my data</span><span class="entry-sub">Spreadsheet files of all entries and accounts</span></span>${icon('right', 18)}</button></li>
@@ -583,11 +598,7 @@ function viewMore() {
       <li><button type="button" class="entry" data-act="lock"><span class="gicon plain">${icon('lock', 18)}</span><span class="entry-main"><span class="entry-title">Lock now</span></span>${icon('right', 18)}</button></li>
       <li><button type="button" class="entry" data-act="signout"><span class="gicon plain">${icon('logout', 18)}</span><span class="entry-main"><span class="entry-title">Sign out</span></span>${icon('right', 18)}</button></li>
     </ul>
-    <section class="card">
-      <h2 class="h3">Coming next</h2>
-      <p class="muted">Phase 4 brings light, optional pots for goals like a holiday, monthly and yearly reports, and a guided close-the-month checklist.</p>
-    </section>
-    <p class="footer-note"><span class="tagline-sm">Neeyum Njanum, Oru Kudukka</span><br>Phase 3</p>`;
+    <p class="footer-note"><span class="tagline-sm">Neeyum Njanum, Oru Kudukka</span><br>Phase 5</p>`;
 }
 
 // ---------- Phase 3: bills ----------
@@ -700,7 +711,11 @@ function suggestionCard(s, i, p) {
   if (s.kind === 'spend') return `<li class="card tip">${n}<div><b>Keep ${D.money(s.amount)} for everyday spending</b><span class="muted small">About ${D.money(s.perWeek)} a week until payday${s.typicalWeek ? `, close to your usual ${D.money(s.typicalWeek)}` : ''}.</span></div></li>`;
   if (s.kind === 'emergency') return `<li class="card tip">${n}<div><b>Put ${D.money(s.amount)} into savings</b><span class="muted small">Emergency fund: ${D.money(s.saved)} of ${D.money(s.target)}${s.saved < D.STARTER_EMERGENCY ? '. First aim: £1,000 for small shocks' : ' (3 months of bills)'}.</span></div></li>`;
   if (s.kind === 'debt') return `<li class="card tip">${n}<div><b>Pay ${D.money(s.amount)} extra off ${esc(s.debt.account.name)}</b><span class="muted small">${s.debt.apr ? `${s.debt.apr}% interest, the highest you have` : 'Your loan'}${s.monthsSooner ? `. Debt-free about ${s.monthsSooner} ${s.monthsSooner === 1 ? 'month' : 'months'} sooner` : ''}.</span></div></li>`;
-  return `<li class="card tip">${n}<div><b>${D.money(s.amount)} left for goals or a buffer</b><span class="muted small">Keep it for a holiday, a goal pot later, or let it roll into next month.</span></div></li>`;
+  const pp = D.potsPlan(S.pots, S.potMoves, s.amount);
+  if (pp.length) {
+    return `<li class="card tip">${n}<div><b>${D.money(s.amount)} for goals</b><span class="muted small">Pots still due this month: ${pp.map((x) => `${esc(x.pot.name)} ${D.money(x.need)}`).join(' · ')}.</span><button type="button" class="link" data-act="nav" data-v="pots">Open pots</button></div></li>`;
+  }
+  return `<li class="card tip">${n}<div><b>${D.money(s.amount)} left for goals or a buffer</b><span class="muted small">Keep it for a holiday or a pot, or let it roll into next month.</span>${livePots().length ? '' : '<button type="button" class="link" data-act="nav" data-v="pots">Start a pot</button>'}</div></li>`;
 }
 
 function viewPlan() {
@@ -761,6 +776,388 @@ function planCards() {
       <span class="muted small">Bills to pay</span><span class="big-sm">${D.money(due.reduce((n, r) => n + r.expected, 0))}</span>
       <span class="small muted">${rows.length ? (next ? `Next: ${esc(next.bill.name)} ${D.shortDate(next.due)}` : `All ${rows.length} paid`) : 'Add your bills'}</span></button>
   </section>`;
+}
+
+// ======================= Phase 4: pots =======================
+const potById = (id) => S.pots.find((p) => p.id === id);
+const livePots = () => S.pots.filter((p) => !p.archived).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+const POT_STATE = { done: ['ok', 'Done'], ontrack: ['ok', 'On track'], behind: ['soon', 'Add this month'], late: ['warn', 'Past its date'], open: ['', ''] };
+const POT_BODY = 'M24 13 h16 v5 c10 4 16 12 16 22 c0 12 -10 19 -24 19 c-14 0 -24 -7 -24 -19 c0 -10 6 -18 16 -22 z';
+
+// A clay kudukka that fills from the bottom.
+function potSVG(pct, size, uid) {
+  // A little money always shows a little clay colour, so a started pot never looks empty.
+  const fill = pct > 0 ? Math.max(0.08, Math.min(1, pct)) : 0;
+  const y = 59 - 44 * fill;
+  return `<svg viewBox="0 0 64 64" width="${size}" height="${size}" aria-hidden="true">
+    <defs><clipPath id="pc-${uid}"><path d="${POT_BODY}"/></clipPath></defs>
+    <path d="${POT_BODY}" fill="var(--cream-2)"/>
+    <rect x="0" y="${y.toFixed(1)}" width="64" height="${(64 - y).toFixed(1)}" fill="var(--rust)" clip-path="url(#pc-${uid})"/>
+    <path d="${POT_BODY}" fill="none" stroke="var(--rosewood)" stroke-width="1.2" opacity="0.45"/>
+    <rect x="22" y="12" width="20" height="3.5" rx="1.75" fill="var(--rosewood)"/>
+    <rect x="27" y="22" width="10" height="2.4" rx="1.2" fill="var(--ink)"/>
+  </svg>`;
+}
+
+function potLine(st) {
+  if (st.state === 'done') return 'Target reached';
+  if (st.state === 'late') return `Its month has passed · ${D.money(st.left)} to go`;
+  if (st.monthly) return `${D.money(st.monthly)} a month · ${st.monthsLeft} ${st.monthsLeft === 1 ? 'month' : 'months'} left`;
+  return st.target ? `${D.money(st.left)} to go` : 'No target, just saving';
+}
+
+function potCard(p) {
+  const st = D.potStatus(p, S.potMoves);
+  const [cls, label] = POT_STATE[st.state];
+  return `<button type="button" class="card pot-card" data-act="open-pot" data-id="${p.id}">
+    <span class="pot-art">${potSVG(st.pct, 58, `c${p.id}`)}</span>
+    <span class="entry-main"><span class="row-between"><span class="entry-title">${esc(p.name)}</span>${label ? `<span class="pill-chip ${cls}">${label}</span>` : ''}</span>
+      <span class="pot-amt"><b>${D.money(st.saved)}</b>${st.target ? ` <span class="muted small">of ${D.money(st.target)}</span>` : ''}</span>
+      <span class="entry-sub">${potLine(st)}${p.byMonth ? ` · by ${D.monthShort(p.byMonth)}` : ''}</span></span>
+  </button>`;
+}
+
+function viewPots() {
+  const pots = livePots();
+  const total = pots.reduce((n, p) => n + D.potBalance(p, S.potMoves), 0);
+  const accs = D.potAccounts(S.pots, S.potMoves, S.accounts, S.txns);
+  const archived = S.pots.filter((p) => p.archived);
+  const hasYearly = liveBills().some((b) => b.freq === 'yearly') && !pots.some((p) => p.preset === 'yearly');
+  const hasEmergency = !pots.some((p) => p.preset === 'emergency');
+  return `${subhead('Pots', 'more')}
+    <p class="muted small pad">Optional. Set money aside for things you plan ahead, like the US trip or yearly bills. Kudukka works the same without them.</p>
+    ${pots.length ? `<section class="card stat"><span class="muted small">Set aside in pots</span><span class="big-sm">${D.money(total)}</span><span class="small muted">${pots.length} ${pots.length === 1 ? 'pot' : 'pots'}</span></section>`
+      : `<section class="card welcome-card"><div class="pot-md">${potSVG(0.35, 84, 'empty')}</div><p class="muted">No pots yet. Start one for a holiday, an emergency fund or yearly bills.</p></section>`}
+    ${pots.map(potCard).join('')}
+    <div class="chips">
+      ${hasEmergency ? `<button type="button" class="chip" data-act="add-pot" data-preset="emergency">${icon('shield', 16)} Emergency fund</button>` : ''}
+      ${hasYearly ? `<button type="button" class="chip" data-act="add-pot" data-preset="yearly">${icon('bills', 16)} Yearly bills</button>` : ''}
+      <button type="button" class="chip" data-act="add-pot" data-preset="">${icon('plus', 16)} New pot</button>
+    </div>
+    ${accs.length ? `<h3 class="day">Where the money is</h3><ul class="entries card tight wrap">${accs.map((x) => `<li><div class="entry">
+      <span class="gicon" style="background:${D.PEOPLE[x.account.owner].color};color:${D.PEOPLE[x.account.owner].ink}">${icon('bank', 18)}</span>
+      <span class="entry-main"><span class="entry-title">${esc(x.account.name)}</span><span class="entry-sub">${D.money(x.balance)} in the account · ${D.money(x.inPots)} in pots</span></span>
+      <span class="entry-amt ${x.free < 0 ? 'neg' : ''}"><span class="small muted block">${x.free < 0 ? 'Short' : 'Not in a pot'}</span>${D.money(Math.abs(x.free))}</span></div></li>`).join('')}</ul>` : ''}
+    ${archived.length ? `<h3 class="day">Finished or stopped</h3>${archived.map(potCard).join('')}` : ''}`;
+}
+
+function viewPot() {
+  const p = potById(S.viewArg);
+  if (!p) return `${subhead('Pot', 'pots')}<p class="muted pad">This pot has been removed.</p>`;
+  const st = D.potStatus(p, S.potMoves);
+  const hist = D.potMoves(p, S.potMoves);
+  const acc = accountById(p.accountId);
+  const [cls, label] = POT_STATE[st.state];
+  return `${subhead(p.name, 'pots')}
+    <section class="card pot-hero">
+      <div class="pot-big">${potSVG(st.pct, 128, 'hero')}</div>
+      <span class="big" style="color:var(--rust)">${D.money(st.saved)}</span>
+      ${st.target ? `<span class="muted">of ${D.money(st.target)} · ${Math.round(st.pct * 100)}%</span>` : ''}
+      ${label ? `<span class="pill-chip ${cls}">${label}</span>` : ''}
+      <span class="small muted">${potLine(st)}${p.byMonth ? ` · by ${D.monthLabel(p.byMonth)}` : ''}</span>
+      ${st.monthly ? `<span class="small muted">This month: ${D.money(Math.max(0, st.thisMonth))} of ${D.money(st.monthly)}</span>` : ''}
+      ${acc ? `<span class="small muted">${icon('bank', 12)} Kept in ${esc(acc.name)}</span>` : ''}
+      <div class="btn-row">${p.archived ? '' : `<button type="button" class="btn btn-primary grow" data-act="pot-move" data-dir="add">${icon('plus', 18)} Add money</button>`}
+        <button type="button" class="btn btn-ghost grow" data-act="pot-move" data-dir="take">${icon('minus', 18)} Take out</button></div>
+    </section>
+    <h3 class="day">History</h3>
+    ${hist.length ? `<ul class="entries card tight">${hist.map((m) => `<li><button type="button" class="entry" data-act="edit-pot-move" data-id="${m.id}">
+      <span class="gicon" style="background:${m.amount >= 0 ? 'var(--olive)' : 'var(--quiet)'}">${icon(m.amount >= 0 ? 'plus' : 'minus', 16)}</span>
+      <span class="entry-main"><span class="entry-title">${esc(m.note || (m.amount >= 0 ? 'Added' : 'Taken out'))}</span><span class="entry-sub">${D.dayLabel(m.date)} ${m.date.slice(0, 4)}${D.PEOPLE[m.createdBy] ? ` · ${D.PEOPLE[m.createdBy].name}` : ''}</span></span>
+      <span class="entry-amt ${m.amount >= 0 ? 'pos' : 'quiet'}">${m.amount >= 0 ? '+' : '−'}${D.money(Math.abs(m.amount))}</span></button></li>`).join('')}</ul>`
+      : '<p class="muted pad">Nothing added yet. Tap Add money when you move money for this goal.</p>'}
+    <button type="button" class="btn btn-ghost btn-block" data-act="edit-pot" data-id="${p.id}">${icon('edit', 18)} Edit pot</button>`;
+}
+
+// Home: a small row of pots (only when there are some).
+function potsCard() {
+  if (S.person !== 'home') return '';
+  const pots = livePots();
+  if (!pots.length) return '';
+  const total = pots.reduce((n, p) => n + D.potBalance(p, S.potMoves), 0);
+  return `<button type="button" class="card pots-strip" data-act="nav" data-v="pots">
+    <span class="row-between"><span class="h3">Pots</span><b>${D.money(total)}</b></span>
+    <span class="pot-row">${pots.slice(0, 4).map((p) => { const st = D.potStatus(p, S.potMoves); return `<span class="pot-mini">${potSVG(st.pct, 44, `h${p.id}`)}<span class="small">${esc(p.name)}</span><span class="small muted">${st.target ? `${Math.round(st.pct * 100)}%` : D.money(st.saved)}</span></span>`; }).join('')}</span>
+  </button>`;
+}
+
+// ======================= Phase 4: reports =======================
+const NEEDS_C = '#6E5A4E';
+const WANTS_C = '#C98B6B';
+const pctText = (x) => `${Math.round(x * 100)}%`;
+
+function changeLine(now, before, goodWhenUp) {
+  if (!before) return '';
+  const d = now - before;
+  if (!d) return '<span class="small muted">Same as the month before</span>';
+  const up = d > 0;
+  return `<span class="small ${up === goodWhenUp ? 'ok-text' : 'warn-text'}">${up ? '▲' : '▼'} ${D.money(Math.abs(d))} vs the month before</span>`;
+}
+
+function fiftyCard(needs, wants, income) {
+  if (!(needs + wants) && !income) return '';
+  const saved = income - needs - wants;
+  const base = Math.max(income, needs + wants) || 1;
+  const seg = (v, c) => (v > 0 ? `<span style="width:${(v / base) * 100}%;background:${c}"></span>` : '');
+  const row = (label, v, aim, c) => `<li><span class="leg-label"><span class="odot" style="background:${c}"></span>${label}</span><span class="small muted">${income > 0 ? `${pctText(v / income)} · aim ${aim}` : ''}</span><b>${D.money(v)}</b></li>`;
+  return `<section class="card"><h2 class="h3">Needs, wants and saved</h2>
+    <div class="bar money-bar">${seg(needs, NEEDS_C)}${seg(wants, WANTS_C)}${seg(saved, 'var(--olive)')}</div>
+    <ul class="calc-list split">${row('Needs', needs, '50%', NEEDS_C)}${row('Wants', wants, '30%', WANTS_C)}${income > 0 ? row(saved >= 0 ? 'Saved' : 'Overspent', Math.abs(saved), '20%', saved >= 0 ? 'var(--olive)' : 'var(--danger)') : ''}</ul>
+    <p class="small muted">A common UK guide is 50/30/20 of what comes in; many households need nearer 60/20/20. Choose what counts as a need in Categories.</p></section>`;
+}
+
+function catRows(byGroup, avg) {
+  const groups = Object.entries(byGroup).map(([id, amt]) => ({ g: D.groupById(id) || D.groupById('other'), amt })).sort((a, b) => b.amt - a.amt);
+  const max = groups.length ? groups[0].amt : 1;
+  return groups.map(({ g, amt }) => {
+    const a = avg && avg[g.id];
+    const d = a ? amt - a : 0;
+    const note = a && Math.abs(d) >= Math.max(1000, a * 0.15) ? `<span class="small ${d > 0 ? 'warn-text' : 'ok-text'}">${d > 0 ? '▲' : '▼'} ${D.money(Math.abs(d))} vs usual</span>` : '';
+    return `<button type="button" class="grp grp-btn" data-act="report-group" data-id="${g.id}">
+      <span class="gicon" style="background:${g.color}">${icon(g.icon, 18)}</span>
+      <span class="grp-main"><span class="row-between"><span>${esc(g.name)}</span><b>${D.money(amt)}</b></span>
+      <span class="bar thin full"><span style="width:${(amt / max) * 100}%;background:${g.color}"></span></span>${note}</span></button>`;
+  }).join('');
+}
+
+function reportMonthView() {
+  const R = S.report;
+  const r = D.monthReport(S.txns, S.accounts, R.month, S.person, S.trips);
+  const closed = D.isClosed(S.months, R.month);
+  const nav = `<div class="win-nav">
+    <button type="button" class="icon-btn" data-act="report-step" data-d="-1" aria-label="Month before">${icon('left', 20)}</button>
+    <div class="win-title"><b>${D.monthLabel(R.month)}</b><span class="muted small">${r.count} ${r.count === 1 ? 'entry' : 'entries'}${closed ? ' · closed' : ''}</span></div>
+    <button type="button" class="icon-btn" data-act="report-step" data-d="1" ${R.month >= D.currentMonth() ? 'disabled' : ''} aria-label="Month after">${icon('right', 20)}</button></div>`;
+  if (!r.count) return `${nav}<section class="card"><p class="muted">Nothing entered for ${D.monthLabel(R.month)}.</p></section>`;
+  const tight = (list, row) => (list.length ? `<ul class="entries card tight wrap">${list.map(row).join('')}</ul>` : '');
+  return `${nav}
+    <section class="card hero">
+      <span class="muted small">Left over</span>
+      <span class="big" style="color:${r.left >= 0 ? 'var(--olive)' : 'var(--danger)'}">${D.money(r.left)}</span>
+      ${r.savedRate !== null ? `<span class="small muted">${r.left >= 0 ? `Kept ${pctText(r.savedRate)} of what came in` : 'More went out than came in'}</span>` : ''}
+      <div class="row-between"><span>Came in</span><b>${D.money(r.income)}</b></div>${changeLine(r.income, r.prev.income, true)}
+      <div class="row-between"><span>Went out</span><b>${D.money(r.spend)}</b></div>${changeLine(r.spend, r.prev.spend, false)}
+    </section>
+    ${fiftyCard(r.needs, r.wants, r.income)}
+    ${r.spend ? `<section class="card"><h2 class="h3">By category</h2>${catRows(r.byGroup, r.avgByGroup)}
+      ${r.avgMonths ? `<p class="small muted">"Usual" is the average of the ${r.avgMonths === 1 ? 'month' : `${r.avgMonths} months`} before.</p>` : ''}</section>` : ''}
+    ${S.person === 'home' && r.spend ? `<section class="card"><h2 class="h3">Who spent</h2>${splitBar(r.spendBy, r.spend)}
+      <div class="legend">${['sree', 'sha', 'joint'].filter((k) => r.spendBy[k]).map((k) => `<span>${ownerDot(k)}${D.PEOPLE[k].name} ${D.money(r.spendBy[k])}</span>`).join('')}</div></section>` : ''}
+    ${r.byAccount.length ? `<h3 class="day">By account and card</h3>${tight(r.byAccount, (x) => `<li><div class="entry"><span class="gicon" style="background:${D.PEOPLE[x.account.owner].color};color:${D.PEOPLE[x.account.owner].ink}">${icon(D.isDebt(x.account) ? 'card' : 'bank', 18)}</span><span class="entry-main"><span class="entry-title">${esc(x.account.name)}</span></span><span class="entry-amt">${D.money(x.amount)}</span></div></li>`)}` : ''}
+    ${r.topShops.length ? `<h3 class="day">Top shops</h3>${tight(r.topShops, (x) => `<li><div class="entry"><span class="entry-main"><span class="entry-title">${esc(x.name)}</span><span class="entry-sub">${x.count} ${x.count === 1 ? 'time' : 'times'}</span></span><span class="entry-amt">${D.money(x.amount)}</span></div></li>`)}` : ''}
+    ${r.trips.length ? `<h3 class="day">Trips</h3>${tight(r.trips, (x) => `<li><button type="button" class="entry" data-act="open-trip" data-id="${x.trip.id}"><span class="gicon" style="background:var(--travel)">${icon('travel', 18)}</span><span class="entry-main"><span class="entry-title">${esc(x.trip.name)}</span></span><span class="entry-amt">${D.money(x.amount)}</span></button></li>`)}` : ''}
+    ${!closed && R.month < D.currentMonth() && S.person === 'home' ? `<button type="button" class="btn btn-ghost btn-block" data-act="open-close" data-m="${R.month}">${icon('check', 18)} Close ${monthName(R.month)}</button>` : ''}`;
+}
+
+function reportYearView() {
+  const R = S.report;
+  const y = D.yearReport(S.txns, S.accounts, R.year, S.person, S.trips);
+  const nowYear = Number(D.currentMonth().slice(0, 4));
+  const nav = `<div class="win-nav">
+    <button type="button" class="icon-btn" data-act="report-year" data-d="-1" aria-label="Year before">${icon('left', 20)}</button>
+    <div class="win-title"><b>${R.year}</b><span class="muted small">${y.activeMonths} ${y.activeMonths === 1 ? 'month' : 'months'} with entries</span></div>
+    <button type="button" class="icon-btn" data-act="report-year" data-d="1" ${R.year >= nowYear ? 'disabled' : ''} aria-label="Year after">${icon('right', 20)}</button></div>`;
+  if (!y.activeMonths) return `${nav}<section class="card"><p class="muted">Nothing entered for ${R.year}.</p></section>`;
+  const max = Math.max(1, ...y.months.map((m) => Math.max(m.income, m.spend)));
+  const cols = y.months.map((m) => `<button type="button" class="ycol" data-act="report-month" data-m="${m.month}" aria-label="${D.monthLabel(m.month)}: in ${D.money(m.income)}, out ${D.money(m.spend)}">
+    <span class="ybars"><span class="ybar in" style="height:${(m.income / max) * 100}%"></span><span class="ybar out" style="height:${(m.spend / max) * 100}%"></span></span>
+    <span class="ylab">${D.monthLabel(m.month).charAt(0)}</span></button>`).join('');
+  return `${nav}
+    <section class="card hero">
+      <span class="muted small">Left over in ${R.year}</span>
+      <span class="big" style="color:${y.left >= 0 ? 'var(--olive)' : 'var(--danger)'}">${D.money(y.left)}</span>
+      ${y.savedRate !== null ? `<span class="small muted">Savings rate ${pctText(Math.max(0, y.savedRate))}</span>` : ''}
+      <div class="row-between"><span>Came in</span><b>${D.money(y.income)}</b></div>
+      <div class="row-between"><span>Went out</span><b>${D.money(y.spend)}</b></div>
+      <div class="row-between"><span>Usual month's spending</span><b>${D.money(y.avgSpend)}</b></div>
+    </section>
+    <section class="card"><h2 class="h3">Month by month</h2>
+      <div class="ychart">${cols}</div>
+      <div class="legend"><span><span class="odot" style="background:var(--olive)"></span>Came in</span><span><span class="odot" style="background:var(--rust)"></span>Went out</span><span>Tap a month to open it</span></div>
+    </section>
+    ${fiftyCard(y.needs, y.wants, y.income)}
+    ${y.spend ? `<section class="card"><h2 class="h3">By category</h2>${catRows(y.byGroup)}</section>` : ''}
+    ${y.trips.length ? `<h3 class="day">Trips in ${R.year}</h3><ul class="entries card tight wrap">${y.trips.map((x) => `<li><button type="button" class="entry" data-act="open-trip" data-id="${x.trip.id}"><span class="gicon" style="background:var(--travel)">${icon('travel', 18)}</span><span class="entry-main"><span class="entry-title">${esc(x.trip.name)}</span></span><span class="entry-amt">${D.money(x.amount)}</span></button></li>`).join('')}</ul>` : ''}`;
+}
+
+function viewReports() {
+  const R = S.report;
+  if (!R.month) R.month = S.month;
+  if (!R.year) R.year = Number(R.month.slice(0, 4));
+  return `${subhead('Reports', 'more')}${personSwitch()}
+    <div class="segs two" role="group" aria-label="Report"><button type="button" class="seg${R.mode === 'month' ? ' on' : ''}" data-act="report-mode" data-m="month">Month</button><button type="button" class="seg${R.mode === 'year' ? ' on' : ''}" data-act="report-mode" data-m="year">Year</button></div>
+    ${R.mode === 'year' ? reportYearView() : reportMonthView()}`;
+}
+
+// ======================= Phase 4: close the month =======================
+function closeCard() {
+  if (S.person !== 'home') return '';
+  const m = D.shiftMonth(D.currentMonth(), -1);
+  if (D.isClosed(S.months, m) || !S.txns.some((t) => t.month === m)) return '';
+  return `<button type="button" class="card flag-card close-card" data-act="open-close" data-m="${m}">
+    <span class="gicon" style="background:var(--olive)">${icon('check', 18)}</span>
+    <span class="entry-main"><span class="entry-title">Close ${monthName(m)}</span><span class="entry-sub">Check balances, sort the last few, see the report</span></span>${icon('right', 18)}</button>`;
+}
+
+function stepCard(n, done, title, body) {
+  return `<section class="card step-card${done ? ' is-done' : ''}">
+    <div class="step-head"><span class="step-num">${done ? icon('check', 16) : n}</span><h2 class="h3">${title}</h2></div>${body}</section>`;
+}
+
+function viewClose() {
+  const m = S.viewArg || D.shiftMonth(D.currentMonth(), -1);
+  const doc = S.months[m] || {};
+  const c = D.closeChecks({ month: m, txns: S.txns, accounts: S.accounts, bills: S.bills, closing: doc });
+  const choices = [-3, -2, -1, 0].map((k) => D.shiftMonth(D.currentMonth(), k));
+  if (!choices.includes(m)) choices.unshift(m);
+  const picker = `<div class="chips">${choices.map((x) => `<button type="button" class="chip${x === m ? ' on' : ''}" data-act="open-close" data-m="${x}">${D.monthShort(x)}${D.isClosed(S.months, x) ? ` ${icon('check', 14)}` : ''}</button>`).join('')}</div>`;
+  if (doc.closed) {
+    return `${subhead('Close the month', 'more')}${picker}
+      <section class="card welcome-card sealed"><span class="seal">${icon('check', 30)}</span><h2 class="h2">${D.monthLabel(m)} is closed</h2>
+        <p class="muted">Closed${doc.closedAt ? ` on ${D.dayLabel(doc.closedAt)}` : ''}${D.PEOPLE[doc.closedBy] ? ` by ${D.PEOPLE[doc.closedBy].name}` : ''}. Entries in this month are locked so the numbers stay as they were.</p>
+        <button type="button" class="btn btn-primary btn-block" data-act="report-month" data-m="${m}">${icon('chart', 18)} See the report</button>
+        <button type="button" class="btn btn-ghost btn-block" data-act="reopen-month" data-m="${m}">Reopen ${monthName(m)}</button></section>`;
+  }
+  const accRow = (x) => {
+    const draft = S.closeDraft[x.account.id] ?? (x.bank !== null ? poundsText(x.bank) : '');
+    const res = x.diff === null ? '' : x.diff === 0 ? `<span class="ok">${icon('check', 14)} Matches</span>`
+      : `<span class="small warn-text">Off by ${D.money(Math.abs(x.diff))}</span><button type="button" class="btn btn-ghost btn-sm" data-act="close-adjust" data-id="${x.account.id}" data-m="${m}">Add a ${D.money(Math.abs(x.diff))} adjustment</button>`;
+    return `<li class="chk-row"><div class="row-between"><span class="entry-title">${ownerDot(x.account.owner)}${esc(x.account.name)}</span><span class="small muted">Kudukka: <b>${D.money(x.shown)}</b>${D.isDebt(x.account) ? ' owed' : ''}</span></div>
+      <div class="chk-input"><div class="amount-wrap small"><span class="pound">£</span><input name="chk:${x.account.id}" class="input bare" inputmode="decimal" placeholder="${D.isDebt(x.account) ? `Owed on ${D.shortDate(c.end)}` : `Balance on ${D.shortDate(c.end)}`}" value="${esc(draft)}" aria-label="${esc(x.account.name)}: bank balance on ${D.shortDate(c.end)}"></div>${res}</div></li>`;
+  };
+  const allMatch = !c.accounts.length || c.checked === c.accounts.length;
+  return `${subhead('Close the month', 'more')}${picker}
+    <p class="muted small pad">Five short steps for ${D.monthLabel(m)}. Nothing here is required; do what helps.</p>
+    ${stepCard(1, allMatch, 'Check balances with the bank', `<p class="small muted">Type what each bank app shows for the end of ${monthName(m)} (${D.shortDate(c.end)}). Use the statement or scroll back in the app.</p>
+      ${c.accounts.length ? `<ul class="chk-list">${c.accounts.map(accRow).join('')}</ul>
+      <button type="button" class="btn btn-primary btn-sm" data-act="save-checks" data-m="${m}">Check</button>` : `<span class="small muted">No accounts started before the end of ${monthName(m)}: their opening balances begin later, so there's nothing to check.</span>`}`)}
+    ${stepCard(2, !c.flagged.length && !c.unsorted.length, 'Sort out the last few', `${c.flagged.length ? `<div class="row-between"><span>${c.flagged.length} with an Ask flag</span><button type="button" class="link" data-act="close-show" data-k="flagged" data-m="${m}">Show</button></div>` : ''}
+      ${c.unsorted.length ? `<div class="row-between"><span>${c.unsorted.length} in Other → General</span><button type="button" class="link" data-act="close-show" data-k="other" data-m="${m}">Show</button></div>` : ''}
+      ${!c.flagged.length && !c.unsorted.length ? '<span class="ok-text small">Nothing to sort.</span>' : ''}`)}
+    ${stepCard(3, !c.unpaid.length, 'Bills', c.unpaid.length ? `<p class="small muted">Due in ${monthName(m)} with no payment entered:</p><ul class="entries tight-list">${c.unpaid.map((u) => `<li class="bill-li"><div class="entry"><span class="entry-main"><span class="entry-title">${esc(u.bill.name)}</span><span class="entry-sub">Due ${D.shortDate(u.due)}</span></span><span class="entry-amt">${D.money(u.expected)}</span></div><button type="button" class="paid-btn" data-act="pay-bill" data-id="${u.bill.id}" data-due="${u.due}">${icon('check', 16)} Paid</button></li>`).join('')}</ul>` : '<span class="ok-text small">Every bill has a payment.</span>')}
+    ${stepCard(4, !!doc.reportSeen, 'Look at the report', `<button type="button" class="btn btn-ghost btn-sm" data-act="report-month" data-m="${m}" data-seen="1">${icon('chart', 16)} See ${monthName(m)}'s report</button>`)}
+    ${stepCard(5, false, `Close ${monthName(m)}`, `<p class="small muted">Locks ${monthName(m)}'s entries so the numbers stay as they were. You can reopen it any time.</p>
+      <button type="button" class="btn btn-primary btn-block" data-act="close-month" data-m="${m}">Close ${monthName(m)}</button>`)}`;
+}
+
+// ======================= Phase 5: import a bank statement =======================
+function viewImport() {
+  const I = S.imp;
+  if (I && I.step === 'review') return importReview();
+  if (I && I.step === 'done') return importDone();
+  return importStart();
+}
+
+function importStart() {
+  const I = S.imp || {};
+  const accs = activeAccounts();
+  return `${subhead('Import a statement', 'more')}
+    <section class="card"><ol class="steps-list">
+      <li>In your bank app or website, download a statement as a <b>CSV</b> file (look under Statements, Export or Download).</li>
+      <li>Choose the account it's from, then the file.</li>
+      <li>Check the list, then import. Anything already in Kudukka is skipped.</li></ol>
+      <p class="small muted">${icon('lock', 12)} Only the date, shop name and amount are kept. Account numbers and sort codes are removed.</p></section>
+    <div class="field"><span class="label">Statement from</span>${accs.length ? `<div class="chips">${accs.map((a) => `<button type="button" class="chip acc${I.accountId === a.id ? ' on' : ''}" data-act="imp-acc" data-id="${a.id}">${ownerDot(a.owner)}${esc(a.name)}</button>`).join('')}</div>` : '<p class="muted">Add an account first.</p>'}</div>
+    <label class="btn btn-primary btn-block file-btn${I.accountId ? '' : ' is-off'}">${icon('upload', 18)} Choose CSV file
+      <input type="file" id="imp-file" accept=".csv,text/csv,text/plain,application/vnd.ms-excel" ${I.accountId ? '' : 'disabled'}></label>
+    ${I.accountId ? '' : '<p class="hint center">Choose the account first.</p>'}
+    ${I.error ? `<p class="err">${esc(I.error)}</p>` : ''}`;
+}
+
+const IMP_GROUPS = [['ready', 'Ready to import'], ['needs', 'Needs a category'], ['transfer', 'Look like transfers'], ['duplicate', 'Already in Kudukka'], ['closed', 'In a closed month'], ['skip', 'Left out']];
+
+function impRow(it) {
+  const cat = D.categoryById(it.categoryId);
+  const g = it.type === 'spend' && cat ? cat.group : null;
+  const color = it.status === 'skip' ? 'var(--cream-2)' : it.type === 'spend' ? (g ? g.color : 'var(--cream-2)') : it.type === 'income' ? 'var(--olive)' : 'var(--quiet)';
+  const ic = it.type === 'spend' ? (g ? g.icon : 'tag') : it.type === 'income' ? 'income' : it.type === 'transfer' ? 'transfer' : 'adjust';
+  const other = accountById(it.dir === 'in' ? it.fromAccountId : it.toAccountId);
+  const what = it.status === 'skip' ? 'Left out'
+    : it.status === 'duplicate' || it.status === 'closed' ? it.why
+      : it.type === 'transfer' ? (other ? `${it.dir === 'in' ? 'From' : 'To'} ${esc(other.name)}` : 'Transfer · tap to choose the account')
+        : it.type === 'adjust' ? 'Refund' : cat ? esc(cat.name) : 'Tap to choose a category';
+  const title = it.type === 'spend' ? it.shop : (it.note || it.raw || it.shop);
+  const ready = CSV.itemReady(it);
+  return `<li class="imp-li${it.include ? ' on' : ''}">
+    <button type="button" class="imp-tick" data-act="imp-tick" data-k="${it.key}" aria-pressed="${it.include}" aria-label="Import ${esc(title)}" ${ready && it.status !== 'closed' ? '' : 'disabled'}>${it.include ? icon('check', 16) : ''}</button>
+    <button type="button" class="entry" data-act="imp-edit" data-k="${it.key}"><span class="gicon" style="background:${color}">${icon(ic, 16)}</span>
+      <span class="entry-main"><span class="entry-title">${esc(title)}</span><span class="entry-sub">${D.shortDate(it.date)} · ${what}</span></span>
+      <span class="entry-amt ${it.dir === 'in' ? 'pos' : ''}">${it.dir === 'in' ? '+' : '−'}${D.money(it.amount)}</span></button></li>`;
+}
+
+function importMapFields() {
+  const I = S.imp;
+  const opts = (sel) => `<option value="-1">Not used</option>${I.map.header.map((h, i) => `<option value="${i}" ${i === sel ? 'selected' : ''}>${esc(h || `Column ${i + 1}`)}</option>`).join('')}`;
+  const sel = (role, label) => `<label class="map-field"><span class="label">${label}</span><select class="input" data-imp-map="${role}">${opts(I.map[role])}</select></label>`;
+  return `<div class="map-grid">${sel('date', 'Date')}${sel('desc', 'Shop or description')}${sel('amount', 'Amount (one column)')}${sel('out', 'Money out')}${sel('in', 'Money in')}</div>
+    <div class="field"><span class="label">Dates are written</span><div class="segs two"><button type="button" class="seg${I.map.order !== 'mdy' ? ' on' : ''}" data-act="imp-order" data-o="dmy">Day first (UK)</button><button type="button" class="seg${I.map.order === 'mdy' ? ' on' : ''}" data-act="imp-order" data-o="mdy">Month first</button></div></div>
+    ${I.map.amount >= 0 ? `<div class="field"><span class="label">Spending shows as</span><div class="segs two"><button type="button" class="seg${I.spendSign === 'minus' ? ' on' : ''}" data-act="imp-sign" data-s="minus">−12.50 (most banks)</button><button type="button" class="seg${I.spendSign === 'plus' ? ' on' : ''}" data-act="imp-sign" data-s="plus">12.50 (most cards)</button></div></div>` : ''}`;
+}
+
+function importReview() {
+  const I = S.imp;
+  const acc = accountById(I.accountId);
+  const items = I.items || [];
+  const count = items.filter((it) => it.include && CSV.itemReady(it)).length;
+  const colName = (i) => (i >= 0 ? esc(I.map.header[i] || `Column ${i + 1}`) : '—');
+  const groups = IMP_GROUPS.map(([k, title]) => [k, title, items.filter((it) => it.status === k)]).filter(([, , list]) => list.length);
+  return `${subhead('Import a statement', 'more')}
+    <section class="card map-card">
+      <div class="row-between"><span class="entry-title">${icon('upload', 14)} ${esc(I.fileName)}</span><button type="button" class="link" data-act="imp-showmap">${I.showMap ? 'Done' : 'Columns'}</button></div>
+      <span class="small muted">${acc ? `Into ${esc(acc.name)} · ` : ''}${items.length} ${items.length === 1 ? 'row' : 'rows'}</span>
+      ${I.showMap ? importMapFields() : `<span class="small muted">Date: ${colName(I.map.date)} · Shop: ${colName(I.map.desc)} · ${I.map.amount >= 0 ? `Amount: ${colName(I.map.amount)}` : `Out: ${colName(I.map.out)} · In: ${colName(I.map.in)}`}</span>`}
+      ${I.problems && I.problems.length ? `<span class="small warn-text">${I.problems.length} ${I.problems.length === 1 ? 'line' : 'lines'} couldn't be read (line ${I.problems.slice(0, 4).join(', ')}${I.problems.length > 4 ? '…' : ''}). If that's most of them, check Columns.</span>` : ''}
+    </section>
+    ${items.length ? `<div class="chips imp-summary">${groups.map(([k, title, list]) => `<a class="chip" href="#imp-${k}">${title.split(' ')[0] === 'Ready' ? 'Ready' : title} · ${list.length}</a>`).join('')}</div>` : '<section class="card"><p class="muted">No rows could be read. Tap Columns and check which column is which.</p></section>'}
+    ${groups.map(([k, title, list]) => `<h3 class="day" id="imp-${k}">${title} (${list.length})</h3>
+      ${k === 'needs' ? '<p class="small muted pad">Tap one to choose its category. Kudukka offers to use it for the same shop everywhere in the file.</p>' : ''}
+      ${k === 'transfer' ? '<p class="small muted pad">Usually already entered from the other account. Tap one to add it as a transfer.</p>' : ''}
+      <ul class="entries card tight imp-list">${list.map(impRow).join('')}</ul>`).join('')}
+    <div class="imp-bar"><button type="button" class="btn btn-ghost" data-act="imp-cancel">Cancel</button>
+      <button type="button" class="btn btn-primary grow" data-act="imp-go" ${count ? '' : 'disabled'}>Import ${count} ${count === 1 ? 'entry' : 'entries'}</button></div>`;
+}
+
+function importDone() {
+  const I = S.imp;
+  const acc = accountById(I.accountId);
+  return `${subhead('Import a statement', 'more')}
+    <section class="card welcome-card"><span class="seal">${icon('check', 30)}</span>
+      <h2 class="h2">${I.imported} ${I.imported === 1 ? 'entry' : 'entries'} added</h2>
+      <p class="muted">From ${esc(I.fileName)}${acc ? ` into ${esc(acc.name)}` : ''}.${I.left ? ` ${I.left} ${I.left === 1 ? 'row was' : 'rows were'} left out.` : ''}</p>
+      <button type="button" class="btn btn-primary btn-block" data-act="imp-see">See entries</button>
+      <button type="button" class="btn btn-ghost btn-block" data-act="imp-again">Import another file</button></section>`;
+}
+
+async function loadStatement(file) {
+  const I = S.imp || {};
+  const account = accountById(I.accountId);
+  if (!file || !account) return;
+  try {
+    const text = await file.text();
+    const rows = CSV.parseCSV(text);
+    const map = CSV.detectColumns(rows);
+    if (rows.length < 2 || map.date < 0) throw new Error('not a statement');
+    const saved = LS.get(`imp.${account.id}`);
+    const spendSign = (saved && saved.spendSign) || CSV.guessSpendSign(rows, map, account);
+    const complete = map.desc >= 0 && (map.amount >= 0 || map.out >= 0 || map.in >= 0);
+    S.imp = { accountId: account.id, step: 'review', fileName: file.name, rows, map, spendSign, showMap: !complete };
+    rebuildImport();
+  } catch (e) {
+    S.imp = { accountId: account.id, step: 'start', error: "That file didn't open as a statement. Check it's the CSV download (not a PDF), then try again." };
+  }
+  window.scrollTo(0, 0);
+  renderMain();
+}
+
+function rebuildImport() {
+  const I = S.imp;
+  const account = accountById(I.accountId);
+  const read = CSV.readRows(I.rows, I.map, I.spendSign);
+  I.problems = read.problems;
+  I.items = CSV.buildImport(read, {
+    account, accounts: S.accounts, txns: S.txns, bills: S.bills, shopIdx: D.shopIndex(S.txns),
+    closedMonths: Object.keys(S.months).filter((m) => D.isClosed(S.months, m)), incomeCategory: incomeDefault(account.id),
+  });
 }
 
 // ---------- trips ----------
@@ -843,7 +1240,8 @@ function viewCategories() {
 function renderNav() {
   const nav = $('#nav');
   if (!nav) return;
-  const tab = ['trips', 'trip', 'categories', 'bills', 'plan'].includes(S.view) ? (['bills', 'plan'].includes(S.view) && S.backTo === 'home' ? 'home' : 'more') : S.view;
+  const inner = ['trips', 'trip', 'categories', 'bills', 'plan', 'pots', 'pot', 'reports', 'close', 'import'];
+  const tab = inner.includes(S.view) ? (S.backTo === 'home' && !['trips', 'trip', 'categories'].includes(S.view) ? 'home' : 'more') : S.view;
   const b = (v, ic, label) => `<button type="button" class="nav-btn${tab === v ? ' on' : ''}" data-act="nav" data-v="${v}" ${tab === v ? 'aria-current="page"' : ''}>${icon(ic, 24)}<span>${label}</span></button>`;
   nav.innerHTML = `${b('home', 'home', 'Home')}${b('entries', 'list', 'Entries')}
     <div class="nav-add-wrap"><button type="button" class="nav-add" data-act="add-entry" aria-label="Add an entry">${icon('plus', 28)}</button></div>
@@ -871,7 +1269,7 @@ function renderSheet() {
   const root = $('#sheet-root');
   if (!root) return;
   if (!S.sheet) { root.innerHTML = ''; return; }
-  const sheets = { entry: sheetEntry, account: sheetAccount, month: sheetMonth, filters: sheetFilters, trip: sheetTrip, group: sheetGroup, income: sheetIncome, bill: sheetBill, payday: sheetPayday, expected: sheetExpected };
+  const sheets = { entry: sheetEntry, account: sheetAccount, month: sheetMonth, filters: sheetFilters, trip: sheetTrip, group: sheetGroup, income: sheetIncome, bill: sheetBill, payday: sheetPayday, expected: sheetExpected, pot: sheetPot, potmove: sheetPotMove, improw: sheetImpRow };
   const body = (sheets[S.sheet] || sheetMonth)();
   const existing = root.querySelector('.sheet');
   if (existing && existing.dataset.kind === S.sheet) {
@@ -1043,7 +1441,7 @@ function sheetEntry() {
       <div><label class="label" for="f-date">Date</label><input id="f-date" name="date" type="date" class="input" value="${esc(f.date)}"></div>
       <div><label class="label" for="f-note">Note</label><input id="f-note" name="note" class="input" maxlength="80" placeholder="Optional" value="${esc(f.note)}"></div>
     </div>
-    ${outside}${err('date')}
+    ${outside}${lockedMonth() ? `<div class="lock-note">${icon('lock', 16)}<span>${monthName(lockedMonth())} is closed.</span><button type="button" class="link" data-act="reopen-month" data-m="${lockedMonth()}">Reopen</button></div>` : ''}${err('date')}
     ${flagBlock()}
     <div class="sheet-actions">
       ${f.isNew ? '' : `<button type="button" class="btn btn-danger" data-act="delete-entry" aria-label="Delete">${icon('trash', 18)}</button>
@@ -1063,7 +1461,14 @@ function validateEntry() {
   if (f.type === 'transfer' && f.toAccountId && f.toAccountId === f.accountId) e.toAccountId = 'Choose a different account.';
   if ((f.type === 'spend' || f.type === 'income') && !f.categoryId) e.categoryId = f.type === 'spend' ? 'Choose a category.' : 'Choose where it came from.';
   if (!/^\d{4}-\d{2}-\d{2}$/.test(f.date || '')) e.date = 'Choose a date.';
+  else if (lockedMonth()) e.date = `${D.monthLabel(lockedMonth())} is closed. Reopen it to change its entries.`;
   return { e, pence };
+}
+// A closed month an entry form touches (its new date, or the date it had), or null.
+function lockedMonth() {
+  const f = S.form;
+  const ms = [f.date && D.monthOf(f.date), f.original && f.original.month].filter(Boolean);
+  return ms.find((m) => D.isClosed(S.months, m)) || null;
 }
 
 function saveEntry() {
@@ -1100,6 +1505,7 @@ function saveEntry() {
 }
 
 function deleteEntry() {
+  if (lockedMonth()) { S.errors = { date: `${D.monthLabel(lockedMonth())} is closed. Reopen it to delete entries.` }; renderSheet(); return; }
   const t = S.form.original;
   const { createdMs, id, ...rest } = t;
   closeSheet();
@@ -1350,6 +1756,171 @@ function sheetExpected() {
     <div class="sheet-actions"><button type="button" class="btn btn-ghost" data-act="reset-expected">Use averages</button><button type="button" class="btn btn-primary grow" data-act="save-expected">Save</button></div>`;
 }
 
+// ----- pot -----
+function potForm(p, preset) {
+  if (p) {
+    return { isNew: false, id: p.id, name: p.name || '', targetText: p.target ? poundsText(p.target) : '', byMonth: p.byMonth || '', accountId: p.accountId || '', archived: !!p.archived, preset: p.preset || '' };
+  }
+  const f = { isNew: true, id: fb.newId('pots'), name: '', targetText: '', byMonth: '', accountId: '', preset: preset || '' };
+  if (preset === 'emergency') { const plan = currentPlan(); Object.assign(f, { name: 'Emergency fund', targetText: poundsText(plan.emergencyTarget) }); }
+  if (preset === 'yearly') {
+    const total = liveBills().filter((b) => b.freq === 'yearly').reduce((n, b) => n + D.billExpected(b, S.txns), 0);
+    Object.assign(f, { name: 'Yearly bills', targetText: poundsText(total) });
+  }
+  const savings = activeAccounts().find((a) => D.isSaving(a));
+  if (savings && preset) f.accountId = savings.id;
+  return f;
+}
+
+function potMonthHint() {
+  const f = S.form;
+  const target = evaluateToPence(f.targetText);
+  const months = /^\d{4}-\d{2}$/.test(f.byMonth || '') && target ? D.monthsBetween(D.currentMonth(), f.byMonth) : 0;
+  return months > 0 ? `About ${D.money(Math.ceil(target / months))} a month for ${months} ${months === 1 ? 'month' : 'months'} (before anything you've added).`
+    : 'Optional. With a target month, Kudukka works out how much to add each month.';
+}
+
+function sheetPot() {
+  const f = S.form;
+  const hint = f.preset === 'emergency' ? 'Suggested: 3 months of your bills, or £1,000 to start. Change it to suit you.'
+    : f.preset === 'yearly' ? 'Your yearly bills added up. Saving a twelfth each month means they never surprise you.' : '';
+  const accs = activeAccounts().filter((a) => !D.isDebt(a));
+  return `<div class="sheet-head"><h2 class="h2" id="sheet-title">${f.isNew ? 'New pot' : 'Edit pot'}</h2><button type="button" class="icon-btn" data-act="sheet-close" aria-label="Close">${icon('x', 22)}</button></div>
+    <div class="preview-row"><span class="pot-art">${potSVG(0.4, 56, 'form')}</span><span class="entry-title">${esc(f.name || 'New pot')}</span></div>
+    <div class="field"><label class="label" for="p-name">Name</label><input id="p-name" name="name" class="input" maxlength="30" placeholder="e.g. US trip" value="${esc(f.name)}" ${f.isNew && !f.preset ? 'data-autofocus' : ''}>${err('name')}</div>
+    <div class="field"><label class="label" for="p-target">Target</label><div class="amount-wrap small"><span class="pound">£</span><input id="p-target" name="targetText" class="input bare" inputmode="decimal" placeholder="Optional" value="${esc(f.targetText)}"></div>${err('target')}
+      ${hint ? `<p class="hint">${hint}</p>` : ''}</div>
+    <div class="field"><label class="label" for="p-by">Save it by</label><input id="p-by" name="byMonth" type="month" class="input" min="${D.currentMonth()}" value="${esc(f.byMonth)}">
+      <p class="hint" id="pot-month-hint">${potMonthHint()}</p>${err('byMonth')}</div>
+    <div class="field"><span class="label">Kept in</span><div class="chips">
+      <button type="button" class="chip${!f.accountId ? ' on' : ''}" data-act="pick-account" data-field="accountId" data-id="">Not set</button>
+      ${accs.map((a) => `<button type="button" class="chip acc${f.accountId === a.id ? ' on' : ''}" data-act="pick-account" data-field="accountId" data-id="${a.id}">${ownerDot(a.owner)}${esc(a.name)}</button>`).join('')}</div>
+      <p class="hint">Optional. The account that holds this money, ideally a spare savings account.</p></div>
+    <div class="sheet-actions">
+      ${f.isNew ? '' : S.potMoves.some((m) => m.potId === f.id)
+        ? `<button type="button" class="btn btn-ghost" data-act="archive-pot">${f.archived ? 'Restart' : 'Finish'}</button>`
+        : `<button type="button" class="btn btn-danger" data-act="delete-pot" aria-label="Delete">${icon('trash', 18)}</button>`}
+      <button type="button" class="btn btn-primary grow" data-act="save-pot">${f.isNew ? 'Add pot' : 'Save'}</button></div>`;
+}
+
+function savePot() {
+  const f = S.form;
+  const e = {};
+  if (!f.name.trim()) e.name = 'Give it a name.';
+  const target = f.targetText ? evaluateToPence(f.targetText) : null;
+  if (f.targetText && (target === null || target <= 0)) e.target = "That target doesn't look right.";
+  if (f.byMonth && !/^\d{4}-\d{2}$/.test(f.byMonth)) e.byMonth = 'Choose a month.';
+  else if (f.byMonth && f.byMonth < D.currentMonth() && f.isNew) e.byMonth = 'Choose this month or later.';
+  if (f.byMonth && !target) e.target = 'Add a target to save by a month.';
+  S.errors = e;
+  if (Object.keys(e).length) { renderSheet(); return; }
+  const data = { name: f.name.trim(), target: target || null, byMonth: f.byMonth || null, accountId: f.accountId || null, preset: f.preset || null };
+  if (f.isNew) { data.archived = false; data.order = Date.now(); }
+  const { isNew, id } = f;
+  closeSheet();
+  fb.saveDoc('pots', id, data, isNew).catch(() => toast("Couldn't save the pot. Check your connection."));
+  toast(isNew ? `${data.name} pot added` : 'Pot saved');
+  if (isNew) { S.backTo = null; S.view = 'pot'; S.viewArg = id; window.scrollTo(0, 0); renderMain(); renderNav(); }
+}
+
+// ----- add to / take from a pot -----
+function sheetPotMove() {
+  const f = S.form;
+  const p = potById(f.potId);
+  const saved = p ? D.potBalance(p, S.potMoves) - (f.isNew ? 0 : f.original.amount) : 0;
+  return `<div class="sheet-head"><h2 class="h2" id="sheet-title">${f.isNew ? (f.dir === 'add' ? 'Add money' : 'Take money out') : 'Edit'}</h2><button type="button" class="icon-btn" data-act="sheet-close" aria-label="Close">${icon('x', 22)}</button></div>
+    <p class="muted">${esc(p ? p.name : '')} · ${D.money(saved)} in the pot now</p>
+    <div class="segs two" role="group" aria-label="Add or take out"><button type="button" class="seg${f.dir === 'add' ? ' on' : ''}" data-act="pm-dir" data-d="add">Add</button><button type="button" class="seg${f.dir === 'take' ? ' on' : ''}" data-act="pm-dir" data-d="take">Take out</button></div>
+    <div class="field"><label class="label" for="f-amount">Amount</label>
+      <div class="amount-wrap"><span class="pound">£</span><input id="f-amount" name="amountText" class="amount" inputmode="decimal" autocomplete="off" placeholder="0.00" value="${esc(f.amountText)}" ${f.isNew ? 'data-autofocus' : ''}></div>
+      <div class="ops-row"><span></span><span class="calc-result" id="calc-result"></span></div>${err('amount')}</div>
+    <div class="field two-col">
+      <div><label class="label" for="pm-date">Date</label><input id="pm-date" name="date" type="date" class="input" value="${esc(f.date)}"></div>
+      <div><label class="label" for="pm-note">Note</label><input id="pm-note" name="note" class="input" maxlength="60" placeholder="Optional" value="${esc(f.note)}"></div></div>
+    <p class="hint block">This only moves money inside Kudukka. If you also move it between bank accounts, add that as a Transfer.</p>
+    <div class="sheet-actions">
+      ${f.isNew ? '' : `<button type="button" class="btn btn-danger" data-act="delete-pot-move" aria-label="Delete">${icon('trash', 18)}</button>`}
+      <button type="button" class="btn btn-primary grow" data-act="save-pot-move">${f.isNew ? (f.dir === 'add' ? 'Add to pot' : 'Take out') : 'Save'}</button></div>`;
+}
+
+function savePotMove() {
+  const f = S.form;
+  const pence = evaluateToPence(f.amountText);
+  const e = {};
+  if (pence === null || pence <= 0) e.amount = 'Enter an amount.';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(f.date || '')) e.amount = e.amount || 'Choose a date.';
+  S.errors = e;
+  if (Object.keys(e).length) { renderSheet(); return; }
+  const data = { potId: f.potId, amount: f.dir === 'take' ? -pence : pence, date: f.date, note: (f.note || '').trim(), updatedBy: myRole() };
+  if (f.isNew) data.createdBy = myRole();
+  const { isNew, id } = f;
+  closeSheet();
+  fb.saveDoc('potMoves', id, data, isNew).catch(() => toast("Couldn't save. Check your connection."));
+  toast(isNew ? `${f.dir === 'take' ? 'Took out' : 'Added'} ${D.money(pence)}` : 'Saved');
+}
+
+// ----- one imported row -----
+function sheetImpRow() {
+  const f = S.form;
+  const I = S.imp;
+  const acc = accountById(I.accountId);
+  const choices = f.dir === 'out' ? [['spend', 'Spend'], ['transfer', 'Transfer'], ['skip', 'Leave out']]
+    : [['income', 'Income'], ['transfer', 'Transfer'], ...(D.isDebt(acc) ? [['adjust', 'Refund']] : []), ['skip', 'Leave out']];
+  const others = activeAccounts().filter((a) => a.id !== I.accountId);
+  const field = f.dir === 'in' ? 'fromAccountId' : 'toAccountId';
+  let body = '';
+  if (f.choice === 'spend') {
+    const g = D.groupById(f.groupId);
+    const same = I.items.filter((x) => x.key !== f.key && x.dir === 'out' && D.shopKey(x.raw) === D.shopKey(f.raw) && !['duplicate', 'closed'].includes(x.status)).length;
+    body = `<div class="field"><label class="label" for="ir-shop">Shop or payee</label><input id="ir-shop" name="shop" class="input" maxlength="40" value="${esc(f.shop)}"></div>
+      <div class="field"><span class="label">Category</span><div class="chips">${D.spendGroups().map((x) => `<button type="button" class="chip grp-chip${f.groupId === x.id ? ' on' : ''}" style="--c:${x.color}" data-act="pick-group" data-id="${x.id}">${icon(x.icon, 16)}${esc(x.name)}</button>`).join('')}</div>
+      ${g ? `<div class="chips sub">${D.visibleSubs(g).map((s) => `<button type="button" class="chip${f.categoryId === s.id ? ' on' : ''}" data-act="pick-cat" data-id="${s.id}">${esc(s.name)}</button>`).join('')}</div>` : ''}${err('categoryId')}</div>
+      ${same ? `<button type="button" class="toggle-row" data-act="ir-all" aria-pressed="${f.all}"><span class="entry-main"><span class="entry-title">Same for ${same} more from "${esc(f.raw)}"</span><span class="entry-sub">Uses this shop name and category for them too</span></span><span class="switch${f.all ? ' on' : ''}" aria-hidden="true"></span></button>` : ''}`;
+  } else if (f.choice === 'income') {
+    body = `<div class="field"><span class="label">Income from</span><div class="chips">${D.incomeSources().map((x) => `<button type="button" class="chip${f.categoryId === x.id ? ' on' : ''}" data-act="pick-cat" data-id="${x.id}">${esc(x.name)}</button>`).join('')}</div></div>`;
+  } else if (f.choice === 'transfer') {
+    body = `<div class="field"><span class="label">${f.dir === 'in' ? 'Came from' : 'Went to'}</span><div class="chips">${others.map((a) => `<button type="button" class="chip acc${f[field] === a.id ? ' on' : ''}" data-act="pick-account" data-field="${field}" data-id="${a.id}">${ownerDot(a.owner)}${esc(a.name)}</button>`).join('')}</div>${err(field)}
+      <p class="hint">Check it isn't already entered from ${f.dir === 'in' ? 'that' : 'the other'} account.</p></div>`;
+  } else if (f.choice === 'adjust') {
+    body = '<p class="muted small">Adds the money back to the card balance. It doesn\'t count as income or spending.</p>';
+  }
+  return `<div class="sheet-head"><h2 class="h2" id="sheet-title">${f.dir === 'in' ? '+' : '−'}${D.money(f.amount)}</h2><button type="button" class="icon-btn" data-act="sheet-close" aria-label="Close">${icon('x', 22)}</button></div>
+    <p class="muted">${D.dayLabel(f.date)} · "${esc(f.raw || 'No description')}"${f.why ? `<br><span class="small">${esc(f.why)}</span>` : ''}</p>
+    <div class="segs ${choices.length === 4 ? 'four' : ''}" role="group" aria-label="What is it">${choices.map(([k, label]) => `<button type="button" class="seg${f.choice === k ? ' on' : ''}" data-act="ir-type" data-t="${k}">${label}</button>`).join('')}</div>
+    ${body}
+    <div class="sheet-actions"><button type="button" class="btn btn-primary grow" data-act="ir-save">Done</button></div>`;
+}
+
+function saveImpRow() {
+  const f = S.form;
+  const I = S.imp;
+  const it = I.items.find((x) => x.key === f.key);
+  if (!it) { closeSheet(); return; }
+  if (f.choice === 'transfer') {
+    const field = f.dir === 'in' ? 'fromAccountId' : 'toAccountId';
+    if (!f[field]) { S.errors = { [field]: 'Choose the other account.' }; renderSheet(); return; }
+  }
+  const apply = (x, shop) => {
+    if (f.choice === 'skip') { x.status = 'skip'; x.include = false; return; }
+    x.type = f.choice;
+    x.categoryId = f.choice === 'spend' || f.choice === 'income' ? f.categoryId : '';
+    x.toAccountId = f.choice === 'transfer' && x.dir === 'out' ? f.toAccountId : '';
+    x.fromAccountId = f.choice === 'transfer' && x.dir === 'in' ? f.fromAccountId : '';
+    if (f.choice === 'spend') x.shop = shop;
+    if (f.choice === 'adjust') x.note = `Refund · ${x.raw || ''}`.trim();
+    const ok = CSV.itemReady(x);
+    x.status = ok ? 'ready' : 'needs';
+    x.include = ok;
+  };
+  const shop = (f.shop || '').trim() || it.raw || it.shop;
+  apply(it, shop);
+  if (f.choice === 'spend' && f.all && f.categoryId) {
+    I.items.filter((x) => x !== it && x.dir === 'out' && D.shopKey(x.raw) === D.shopKey(it.raw) && !['duplicate', 'closed'].includes(x.status)).forEach((x) => apply(x, shop));
+  }
+  closeSheet();
+  renderMain();
+}
+
 // ----- filters -----
 function sheetFilters() {
   const q = S.search;
@@ -1420,7 +1991,7 @@ function groupForm(g) {
     return { isNew: true, id: '', name: '', color: D.GROUP_COLORS[6], icon: 'other', hidden: false, subs: [{ id: '', name: 'General', hidden: false, isNew: true, key: 'n0' }], newSub: '' };
   }
   return { isNew: false, id: g.id, name: g.name, color: g.color, icon: g.icon, hidden: !!g.hidden, order: g.order,
-    subs: g.subs.map((s, i) => ({ id: s.id, name: s.name, hidden: !!s.hidden, key: `s${i}` })), newSub: '' };
+    subs: g.subs.map((s, i) => ({ id: s.id, name: s.name, hidden: !!s.hidden, need: !!s.need, key: `s${i}` })), newSub: '' };
 }
 
 function sheetGroup() {
@@ -1429,6 +2000,7 @@ function sheetGroup() {
   const icons = D.GROUP_ICONS.map((i) => `<button type="button" class="icon-pick${f.icon === i ? ' on' : ''}" style="--c:${f.color}" data-act="g-icon" data-i="${i}" aria-label="Icon ${i}" aria-pressed="${f.icon === i}">${icon(i, 20)}</button>`).join('');
   const subs = f.subs.map((s) => `<div class="sub-row${s.hidden ? ' is-hidden' : ''}">
       <input name="sub:${s.key}" class="input" maxlength="30" value="${esc(s.name)}" aria-label="Subcategory name">
+      <button type="button" class="btn btn-ghost btn-sm need-btn${s.need ? ' is-need' : ''}" data-act="g-sub-need" data-k="${s.key}" aria-label="${esc(s.name)} counts as ${s.need ? 'a need' : 'a want'}">${s.need ? 'Need' : 'Want'}</button>
       <button type="button" class="btn btn-ghost btn-sm" data-act="g-sub-hide" data-k="${s.key}">${s.hidden ? 'Show' : 'Hide'}</button>
     </div>`).join('');
   return `<div class="sheet-head"><h2 class="h2" id="sheet-title">${f.isNew ? 'New category group' : 'Edit category'}</h2><button type="button" class="icon-btn" data-act="sheet-close" aria-label="Close">${icon('x', 22)}</button></div>
@@ -1436,7 +2008,7 @@ function sheetGroup() {
     <div class="field"><label class="label" for="g-name">Name</label><input id="g-name" name="name" class="input" maxlength="30" value="${esc(f.name)}" ${f.isNew ? 'data-autofocus' : ''}>${err('name')}</div>
     <div class="field"><span class="label">Colour</span><div class="swatches">${swatches}</div></div>
     <div class="field"><span class="label">Icon</span><div class="icon-grid">${icons}</div></div>
-    <div class="field"><span class="label">Subcategories</span>${subs}
+    <div class="field"><span class="label">Subcategories</span><p class="hint">Need or Want sets where it goes in the 50/30/20 report.</p>${subs}
       <div class="sub-row"><input name="newSub" class="input" maxlength="30" placeholder="Add a subcategory" value="${esc(f.newSub)}" aria-label="New subcategory">
       <button type="button" class="btn btn-ghost btn-sm" data-act="g-add-sub">${icon('plus', 16)} Add</button></div>${err('subs')}</div>
     ${f.isNew ? '' : `<button type="button" class="toggle-row" data-act="g-hide" aria-pressed="${f.hidden}">
@@ -1447,7 +2019,7 @@ function sheetGroup() {
 
 function saveGroup() {
   const f = S.form;
-  if (f.newSub && f.newSub.trim()) { f.subs.push({ id: '', name: f.newSub.trim(), hidden: false, isNew: true, key: `n${Date.now()}` }); f.newSub = ''; }
+  if (f.newSub && f.newSub.trim()) { f.subs.push({ id: '', name: f.newSub.trim(), hidden: false, need: f.id === 'bills', isNew: true, key: `n${Date.now()}` }); f.newSub = ''; }
   const e = {};
   if (!f.name.trim()) e.name = 'Give it a name.';
   const subs = f.subs.filter((s) => s.name.trim() || !s.isNew);
@@ -1460,7 +2032,7 @@ function saveGroup() {
   const writes = [fb.mergeDoc('categories', gid, { kind: 'group', name: f.name.trim(), color: f.color, icon: f.icon, hidden: !!f.hidden, order })];
   subs.forEach((s, i) => {
     const sid = s.id || D.newCategoryId(`${gid}.`, s.name);
-    writes.push(fb.mergeDoc('categories', sid, { kind: 'sub', parent: gid, name: s.name.trim(), hidden: !!s.hidden, order: i * 10 }));
+    writes.push(fb.mergeDoc('categories', sid, { kind: 'sub', parent: gid, name: s.name.trim(), hidden: !!s.hidden, need: !!s.need, order: i * 10 }));
   });
   closeSheet();
   Promise.all(writes).catch(() => toast("Couldn't save the category. Check your connection."));
@@ -1571,7 +2143,8 @@ document.addEventListener('click', async (ev) => {
       break;
     case 'nav':
       if (S.view === 'entries' && el.dataset.v !== 'entries') S.search = blankSearch();
-      if (el.closest('#nav')) S.backTo = null; else if (['bills', 'plan', 'trips', 'categories'].includes(el.dataset.v) && !['bills', 'plan'].includes(S.view)) S.backTo = S.view;
+      if (el.closest('#nav')) S.backTo = null; else if (['bills', 'plan', 'trips', 'categories', 'pots', 'reports', 'import'].includes(el.dataset.v) && !['bills', 'plan', 'pots', 'pot', 'reports', 'close', 'import'].includes(S.view)) S.backTo = S.view;
+      if (el.dataset.v === 'import' && S.imp && S.imp.step === 'done') S.imp = { step: 'start', accountId: S.imp.accountId };
       if (el.dataset.v === 'bills' && S.view !== 'bills') { S.billsOffset = 0; S.billsDay = null; }
       S.view = el.dataset.v; S.viewArg = null; window.scrollTo(0, 0); renderMain(); renderNav();
       break;
@@ -1632,7 +2205,7 @@ document.addEventListener('click', async (ev) => {
     case 'g-icon': f.icon = el.dataset.i; renderSheet(); break;
     case 'g-sub-hide': { const s = f.subs.find((x) => x.key === el.dataset.k); if (s) { if (s.isNew) f.subs = f.subs.filter((x) => x !== s); else s.hidden = !s.hidden; } renderSheet(); break; }
     case 'g-add-sub':
-      if (f.newSub && f.newSub.trim()) { f.subs.push({ id: '', name: f.newSub.trim(), hidden: false, isNew: true, key: `n${Date.now()}` }); f.newSub = ''; delete S.errors.subs; }
+      if (f.newSub && f.newSub.trim()) { f.subs.push({ id: '', name: f.newSub.trim(), hidden: false, need: f.id === 'bills', isNew: true, key: `n${Date.now()}` }); f.newSub = ''; delete S.errors.subs; }
       renderSheet();
       setTimeout(() => { const n = document.querySelector('[name="newSub"]'); if (n) n.focus(); }, 50);
       break;
@@ -1713,6 +2286,167 @@ document.addEventListener('click', async (ev) => {
       toast('Expected pay saved');
       break;
     }
+    // ----- Phase 4: pots -----
+    case 'add-pot': openSheet('pot', potForm(null, el.dataset.preset)); break;
+    case 'edit-pot': { const p = potById(el.dataset.id); if (p) openSheet('pot', potForm(p)); break; }
+    case 'open-pot': S.view = 'pot'; S.viewArg = el.dataset.id; window.scrollTo(0, 0); renderMain(); renderNav(); break;
+    case 'save-pot': savePot(); break;
+    case 'archive-pot': {
+      const id = f.id; const archived = !f.archived;
+      closeSheet();
+      fb.saveDoc('pots', id, { archived }, false);
+      toast(archived ? 'Pot finished. Its history stays.' : 'Pot restarted');
+      break;
+    }
+    case 'delete-pot': {
+      const p = potById(f.id);
+      const { id, ...rest } = p;
+      closeSheet();
+      S.view = 'pots'; renderMain();
+      fb.removeDoc('pots', id);
+      toast('Pot deleted', () => fb.restoreDoc('pots', id, rest));
+      break;
+    }
+    case 'pot-move': {
+      const p = potById(S.viewArg);
+      if (!p) break;
+      const st = D.potStatus(p, S.potMoves);
+      const due = el.dataset.dir === 'add' && st.monthly ? Math.max(0, st.monthly - Math.max(0, st.thisMonth)) : 0;
+      openSheet('potmove', { isNew: true, id: fb.newId('potMoves'), potId: p.id, dir: el.dataset.dir, amountText: due ? poundsText(due) : '', date: D.todayISO(), note: '' });
+      break;
+    }
+    case 'edit-pot-move': {
+      const m = S.potMoves.find((x) => x.id === el.dataset.id);
+      if (m) openSheet('potmove', { isNew: false, id: m.id, potId: m.potId, dir: m.amount < 0 ? 'take' : 'add', amountText: poundsText(m.amount), date: m.date, note: m.note || '', original: m });
+      break;
+    }
+    case 'pm-dir': f.dir = el.dataset.d; renderSheet(); break;
+    case 'save-pot-move': savePotMove(); break;
+    case 'delete-pot-move': {
+      const { id, createdMs, ...rest } = f.original;
+      closeSheet();
+      fb.removeDoc('potMoves', id);
+      toast('Removed', () => fb.restoreDoc('potMoves', id, rest));
+      break;
+    }
+    case 'g-sub-need': { const s = f.subs.find((x) => x.key === el.dataset.k); if (s) s.need = !s.need; renderSheet(); break; }
+    // ----- Phase 4: reports -----
+    case 'report-mode': S.report.mode = el.dataset.m; renderMain(); break;
+    case 'report-step': S.report.month = D.shiftMonth(S.report.month, Number(el.dataset.d)); renderMain(); break;
+    case 'report-year': S.report.year += Number(el.dataset.d); renderMain(); break;
+    case 'report-month': {
+      const m = el.dataset.m;
+      S.report = { ...S.report, mode: 'month', month: m, year: Number(m.slice(0, 4)) };
+      if (el.dataset.seen) fb.mergeDoc('months', m, { reportSeen: true }).catch(() => {});
+      if (S.view !== 'reports') { if (S.view === 'home') S.backTo = 'home'; S.view = 'reports'; S.viewArg = null; renderNav(); }
+      window.scrollTo(0, 0);
+      renderMain();
+      break;
+    }
+    case 'report-group': {
+      const m = S.report.month;
+      S.search = { ...blankSearch(), groupId: el.dataset.id, scope: S.report.mode === 'month' && m === S.month ? 'month' : 'all' };
+      if (S.report.mode === 'month' && m !== S.month) S.search.text = '';
+      S.backTo = null; S.view = 'entries'; window.scrollTo(0, 0); renderMain(); renderNav();
+      break;
+    }
+    // ----- Phase 4: close the month -----
+    case 'open-close':
+      if (S.view === 'home') S.backTo = 'home'; else if (S.view === 'more') S.backTo = null;
+      S.closeDraft = {};
+      S.view = 'close'; S.viewArg = el.dataset.m || null; window.scrollTo(0, 0); renderMain(); renderNav();
+      break;
+    case 'save-checks': {
+      const m = el.dataset.m;
+      const checks = { ...((S.months[m] && S.months[m].balanceChecks) || {}) };
+      let bad = 0;
+      for (const [id, txt] of Object.entries(S.closeDraft)) {
+        if (!String(txt).trim()) { delete checks[id]; continue; }
+        const v = evaluateToPence(txt);
+        if (v === null) bad++; else checks[id] = v;
+      }
+      S.closeDraft = {};
+      fb.mergeDoc('months', m, { balanceChecks: checks }).catch(() => toast("Couldn't save. Check your connection."));
+      toast(bad ? `${bad} ${bad === 1 ? 'amount' : 'amounts'} didn't look right` : 'Checked');
+      break;
+    }
+    case 'close-adjust': {
+      const m = el.dataset.m;
+      const c = D.closeChecks({ month: m, txns: S.txns, accounts: S.accounts, bills: S.bills, closing: S.months[m] || {} });
+      const x = c.accounts.find((a) => a.account.id === el.dataset.id);
+      if (!x || !x.diff) break;
+      const amount = D.isDebt(x.account) ? -x.diff : x.diff;
+      const data = { type: 'adjust', amount, date: c.end, month: m, accountId: x.account.id, toAccountId: null, categoryId: null, note: 'Balance check', calc: null, createdBy: myRole(), updatedBy: myRole() };
+      fb.saveDoc('transactions', fb.newId('transactions'), data, true).catch(() => toast("Couldn't save the adjustment."));
+      toast(`Adjusted ${x.account.name} by ${D.money(Math.abs(amount))}`);
+      break;
+    }
+    case 'close-show':
+      S.search = el.dataset.k === 'flagged' ? { ...blankSearch(), flagged: true, scope: 'all' } : { ...blankSearch(), groupId: 'other', scope: 'all' };
+      S.backTo = null; S.view = 'entries'; window.scrollTo(0, 0); renderMain(); renderNav();
+      break;
+    case 'close-month': {
+      const m = el.dataset.m;
+      fb.mergeDoc('months', m, { closed: true, closedAt: D.todayISO(), closedBy: myRole() }).catch(() => toast("Couldn't close. Check your connection."));
+      window.scrollTo(0, 0);
+      toast(`${D.monthLabel(m)} closed`);
+      break;
+    }
+    case 'reopen-month': {
+      const m = el.dataset.m;
+      fb.mergeDoc('months', m, { closed: false }).catch(() => toast("Couldn't reopen. Check your connection."));
+      toast(`${D.monthLabel(m)} reopened`);
+      break;
+    }
+    // ----- Phase 5: import -----
+    case 'imp-acc': S.imp = { step: 'start', accountId: el.dataset.id }; renderMain(); break;
+    case 'imp-showmap': S.imp.showMap = !S.imp.showMap; renderMain(); break;
+    case 'imp-order': S.imp.map.order = el.dataset.o; rebuildImport(); renderMain(); break;
+    case 'imp-sign': S.imp.spendSign = el.dataset.s; rebuildImport(); renderMain(); break;
+    case 'imp-tick': {
+      const it = S.imp.items.find((x) => x.key === el.dataset.k);
+      if (it && CSV.itemReady(it) && it.status !== 'closed') { it.include = !it.include; if (it.include && it.status !== 'ready') it.status = 'ready'; }
+      renderMain();
+      break;
+    }
+    case 'imp-edit': {
+      const it = S.imp.items.find((x) => x.key === el.dataset.k);
+      if (!it) break;
+      if (it.status === 'closed') { toast(`${D.monthLabel(D.monthOf(it.date))} is closed. Reopen it to add to it.`); break; }
+      const cat = D.categoryById(it.categoryId);
+      openSheet('improw', { ...it, choice: it.status === 'skip' ? 'skip' : it.type, shop: it.type === 'spend' ? it.shop : (it.raw || it.shop), groupId: cat && cat.group ? cat.group.id : '', all: true });
+      break;
+    }
+    case 'ir-type':
+      f.choice = el.dataset.t; S.errors = {};
+      if (f.choice === 'income' && !String(f.categoryId || '').startsWith('income.')) f.categoryId = incomeDefault(S.imp.accountId);
+      if (f.choice === 'spend' && String(f.categoryId || '').startsWith('income.')) { f.categoryId = ''; f.groupId = ''; }
+      renderSheet();
+      break;
+    case 'ir-all': f.all = !f.all; renderSheet(); break;
+    case 'ir-save': saveImpRow(); break;
+    case 'imp-cancel': S.imp = { step: 'start', accountId: S.imp.accountId }; window.scrollTo(0, 0); renderMain(); break;
+    case 'imp-go': {
+      const I = S.imp;
+      const list = I.items.filter((it) => it.include && CSV.itemReady(it) && it.status !== 'closed');
+      if (!list.length) break;
+      const role = myRole();
+      const ids = [];
+      const writes = list.map((it) => {
+        const id = fb.newId('transactions');
+        ids.push(id);
+        return fb.saveDoc('transactions', id, { ...CSV.itemToEntry(it, I.accountId), createdBy: role, updatedBy: role }, true);
+      });
+      Promise.all(writes).catch(() => toast("Some entries didn't save. Check your connection."));
+      LS.set(`imp.${I.accountId}`, { spendSign: I.spendSign });
+      S.imp = { step: 'done', accountId: I.accountId, fileName: I.fileName, imported: list.length, left: I.items.length - list.length };
+      window.scrollTo(0, 0);
+      renderMain();
+      toast(`Imported ${list.length} ${list.length === 1 ? 'entry' : 'entries'}`, () => Promise.all(ids.map((id) => fb.removeDoc('transactions', id))));
+      break;
+    }
+    case 'imp-again': S.imp = { step: 'start', accountId: S.imp.accountId }; renderMain(); break;
+    case 'imp-see': S.search = { ...blankSearch(), scope: 'all' }; S.backTo = null; S.view = 'entries'; window.scrollTo(0, 0); renderMain(); renderNav(); break;
     case 'export': exportData().catch((e) => { console.error(e); toast("Couldn't export. Try again."); }); break;
     case 'person': S.person = el.dataset.p; renderMain(); break;
     case 'toggle-archived': S.showArchived = !S.showArchived; renderMain(); break;
@@ -1812,6 +2546,7 @@ document.addEventListener('input', (ev) => {
     searchTimer = setTimeout(() => { const r = $('#results'); if (r) r.innerHTML = entriesResults(); }, 120);
     return;
   }
+  if (el.name && el.name.startsWith('chk:')) { S.closeDraft[el.name.slice(4)] = el.value; return; }
   if (!el.name || !S.sheet) return;
   if (el.name.startsWith('sub:')) {
     const s = S.form.subs && S.form.subs.find((x) => x.key === el.name.slice(4));
@@ -1826,10 +2561,13 @@ document.addEventListener('input', (ev) => {
   }
   if (el.name === 'amountText') { updateCalc(); if (S.errors.amount) { delete S.errors.amount; const e = el.closest('.field').querySelector('.err'); if (e) e.remove(); } }
   if (el.name === 'day' && S.sheet === 'payday') { const p = $('#payday-preview'); if (p) p.textContent = paydayPreview(); }
+  if (S.sheet === 'pot' && (el.name === 'byMonth' || el.name === 'targetText')) { const h = $('#pot-month-hint'); if (h) h.textContent = potMonthHint(); }
   if (el.name === 'checkText') { const l = $('#check-line'); if (l) l.innerHTML = checkLine(); }
   if (el.name === 'name' && S.errors.name) { delete S.errors.name; const e = el.closest('.field').querySelector('.err'); if (e) e.remove(); }
 });
 document.addEventListener('change', (ev) => {
+  if (ev.target.id === 'imp-file') { loadStatement(ev.target.files && ev.target.files[0]); return; }
+  if (ev.target.dataset && ev.target.dataset.impMap) { S.imp.map[ev.target.dataset.impMap] = Number(ev.target.value); rebuildImport(); renderMain(); return; }
   if (ev.target.name === 'date' && S.sheet === 'entry') renderSheet();
   if (ev.target.name === 'openingDate' || ev.target.name === 'type') renderSheet();
 });
@@ -1854,7 +2592,7 @@ fb.watchAuth((user) => {
   S.user = user;
   if (!user) {
     stopData();
-    S.household = null; S.householdLoaded = false; S.accounts = []; S.txns = []; S.trips = []; S.bills = []; S.plans = {}; S.denied = false;
+    S.household = null; S.householdLoaded = false; S.accounts = []; S.txns = []; S.trips = []; S.bills = []; S.plans = {}; S.pots = []; S.potMoves = []; S.months = {}; S.imp = null; S.closeDraft = {}; S.denied = false;
     D.setCategories([]);
   } else if (changed) {
     S.householdLoaded = false;

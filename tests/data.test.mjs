@@ -258,4 +258,235 @@ assert.equal(short.safePerWeek, 0);
 assert.deepEqual(short.guard.map((g) => g.status), ['short', 'short']);
 assert.equal(short.guard[0].shortDate, '2026-11-10');
 
+// ======================= Phase 4 =======================
+D.setCategories([]);
+// needs and wants
+assert.equal(D.isNeed('bills.rent'), true);
+assert.equal(D.isNeed('bills.subs'), false, 'subscriptions are wants');
+assert.equal(D.isNeed('food.groceries'), true);
+assert.equal(D.isNeed('food.eatingout'), false);
+D.setCategories([{ id: 'food.eatingout', need: true }, { id: 'bills.newsub-x1', kind: 'sub', parent: 'bills', name: 'Gym' }]);
+assert.equal(D.isNeed('food.eatingout'), true, 'Sha can switch a sub to Needs');
+assert.equal(D.isNeed('bills.newsub-x1'), true, 'new subs in Bills default to Needs');
+D.setCategories([]);
+assert.equal(D.monthsBetween('2026-11', '2026-11'), 1);
+assert.equal(D.monthsBetween('2026-11', '2027-08'), 10);
+
+// pots
+const pots = [
+  { id: 'us', name: 'US trip', target: 700000, byMonth: '2027-08' },
+  { id: 'em', name: 'Emergency', target: 300000 },
+  { id: 'car', name: 'Car', target: 50000, byMonth: '2026-10' },
+  { id: 'tv', name: 'TV', target: 40000, byMonth: '2026-12', accountId: 'joint' },
+];
+const moves = [
+  { potId: 'us', amount: 100000, date: '2026-10-28' },
+  { potId: 'us', amount: 30000, date: '2026-11-02' },
+  { potId: 'us', amount: -10000, date: '2026-11-05' },
+  { potId: 'em', amount: 50000, date: '2026-09-01' },
+  { potId: 'car', amount: 20000, date: '2026-09-01' },
+  { potId: 'tv', amount: 40000, date: '2026-11-03' },
+];
+const us = D.potStatus(pots[0], moves, '2026-11-20');
+assert.equal(us.saved, 120000);
+assert.equal(us.thisMonth, 20000);
+assert.equal(us.monthsLeft, 10);
+assert.equal(us.monthly, 60000, '(7000 − 1000 at the start of Nov) ÷ 10 months');
+assert.equal(us.state, 'behind');
+assert.equal(D.potStatus(pots[1], moves, '2026-11-20').state, 'open');
+assert.equal(D.potStatus(pots[2], moves, '2026-11-20').state, 'late');
+assert.equal(D.potStatus(pots[3], moves, '2026-11-20').state, 'done');
+assert.deepEqual(D.potMoves(pots[0], moves).map((m) => m.amount), [-10000, 30000, 100000]);
+const pp = D.potsPlan(pots, moves, 25000, '2026-11-20');
+assert.deepEqual(pp.map((x) => [x.pot.id, x.need, x.put]), [['us', 40000, 25000]]);
+const pacc = D.potAccounts(pots, moves, accounts, txns);
+assert.equal(pacc.length, 1);
+assert.equal(pacc[0].inPots, 40000);
+assert.equal(pacc[0].free, -2500 - 40000);
+
+// reports
+const rAcc = [
+  { id: 'b', owner: 'sha', type: 'current', openingBalance: 100000, openingDate: '2026-01-01' },
+  { id: 's', owner: 'sree', type: 'current', openingBalance: 0, openingDate: '2026-01-01' },
+];
+const rTx = [
+  t({ id: 'r1', type: 'income', amount: 200000, date: '2026-10-25', accountId: 'b', categoryId: 'income.sha' }),
+  t({ id: 'r2', type: 'spend', amount: 90000, date: '2026-10-01', accountId: 'b', categoryId: 'bills.rent', shop: 'Landlord' }),
+  t({ id: 'r3', type: 'spend', amount: 10000, date: '2026-10-03', accountId: 'b', categoryId: 'food.eatingout', shop: 'Nandos' }),
+  t({ id: 'r4', type: 'spend', amount: 5000, date: '2026-10-04', accountId: 's', categoryId: 'food.groceries', shop: 'Tesco' }),
+  t({ id: 'r5', type: 'spend', amount: 3000, date: '2026-10-09', accountId: 's', categoryId: 'food.groceries', shop: 'tesco', tripId: 'th' }),
+  t({ id: 'r6', type: 'spend', amount: 40000, date: '2026-09-10', accountId: 'b', categoryId: 'food.groceries' }),
+  t({ id: 'r7', type: 'income', amount: 150000, date: '2026-09-25', accountId: 's', categoryId: 'income.sree' }),
+  t({ id: 'r8', type: 'spend', amount: 20000, date: '2026-08-10', accountId: 'b', categoryId: 'food.groceries' }),
+];
+const rep = D.monthReport(rTx, rAcc, '2026-10', 'home', trips);
+assert.equal(rep.income, 200000);
+assert.equal(rep.spend, 108000);
+assert.equal(rep.needs, 98000);
+assert.equal(rep.wants, 10000);
+assert.equal(rep.savedRate, 92000 / 200000);
+assert.deepEqual(rep.prev, { income: 150000, spend: 40000, left: 110000 });
+assert.equal(rep.avgByGroup.food, 30000, 'avg of Sep 40000 and Aug 20000');
+assert.equal(rep.avgMonths, 2);
+assert.deepEqual(rep.topShops.map((x) => [x.name, x.amount, x.count]), [['Landlord', 90000, 1], ['Nandos', 10000, 1], ['Tesco', 8000, 2]]);
+assert.deepEqual(rep.byAccount.map((x) => [x.account.id, x.amount]), [['b', 100000], ['s', 8000]]);
+assert.deepEqual(rep.trips.map((x) => [x.trip.id, x.amount]), [['th', 3000]]);
+assert.equal(D.monthReport(rTx, rAcc, '2026-10', 'sree').spend, 8000);
+const yr = D.yearReport(rTx, rAcc, 2026, 'home', trips);
+assert.equal(yr.months.length, 12);
+assert.equal(yr.months[9].spend, 108000);
+assert.equal(yr.income, 350000);
+assert.equal(yr.spend, 168000);
+assert.equal(yr.activeMonths, 3);
+assert.equal(yr.avgSpend, 56000);
+assert.equal(yr.needs, 158000);
+assert.equal(yr.byGroup.food, 78000);
+
+// closing the month
+const cAcc = [...rAcc, { id: 'cc', owner: 'sha', type: 'credit', openingBalance: -5000, openingDate: '2026-01-01' }];
+const cTx = [...rTx, t({ id: 'r9', type: 'spend', amount: 700, date: '2026-10-20', accountId: 'b', categoryId: 'other.general' }),
+  t({ id: 'r10', type: 'spend', amount: 800, date: '2026-10-21', accountId: 'b', categoryId: 'food.takeaway', flag: true, flagFor: 'sree' })];
+const cBills = [
+  { id: 'rent', name: 'Rent', kind: 'bill', amount: 90000, freq: 'monthly', dueDay: 1, accountId: 'b', shop: 'Landlord' },
+  { id: 'gym', name: 'Gym', kind: 'bill', amount: 3000, freq: 'monthly', dueDay: 15, accountId: 'b', shop: 'Gym' },
+  { id: 'car', name: 'Car insurance', kind: 'bill', amount: 40000, freq: 'yearly', dueMonth: 3, dueDay: 2, accountId: 'b' },
+];
+const cc = D.closeChecks({ month: '2026-10', txns: cTx, accounts: cAcc, bills: cBills, closing: { balanceChecks: { b: 100000 + 200000 - 90000 - 10000 - 700 - 800 - 40000 - 20000, cc: 4000 } } });
+assert.equal(cc.accounts.length, 3);
+assert.equal(cc.checked, 1);
+assert.deepEqual(cc.mismatched.map((x) => [x.account.id, x.diff]), [['cc', -1000]], 'card checked as amount owed');
+assert.deepEqual(cc.flagged.map((x) => x.id), ['r10']);
+assert.deepEqual(cc.unsorted.map((x) => x.id), ['r9']);
+assert.deepEqual(cc.unpaid.map((x) => x.bill.id), ['gym']);
+assert.equal(D.isClosed({ '2026-10': { closed: true } }, '2026-10'), true);
+assert.equal(D.isClosed({}, '2026-10'), false);
+
+// ======================= Phase 5: bank statement import =======================
+const CSV = await import('../js/bankcsv.js');
+assert.deepEqual(CSV.parseCSV('a,"b, c","say ""hi"""\r\n1,2,3\n\n'), [['a', 'b, c', 'say "hi"'], ['1', '2', '3']]);
+assert.deepEqual(CSV.parseCSV('Date;Amount\n01/11/2026;-1,50'), [['Date', 'Amount'], ['01/11/2026', '-1,50']]);
+assert.equal(CSV.parseDate('02/11/2026'), '2026-11-02');
+assert.equal(CSV.parseDate('11/02/2026', 'mdy'), '2026-11-02');
+assert.equal(CSV.parseDate('02 Nov 2026'), '2026-11-02');
+assert.equal(CSV.parseDate('2026-11-02T10:00:00Z'), '2026-11-02');
+assert.equal(CSV.parseDate('31/02/2026'), null);
+assert.equal(CSV.dateOrder(['11/25/2026', '11/02/2026']), 'mdy');
+assert.equal(CSV.parseAmount('£1,234.56'), 123456);
+assert.equal(CSV.parseAmount('(12.30)'), -1230);
+assert.equal(CSV.parseAmount('12.30 DR'), -1230);
+assert.equal(CSV.cleanShop('CARD PAYMENT TO TESCO STORES 3245 ON 02 NOV'), 'Tesco Stores');
+assert.equal(CSV.cleanShop('FPO 12345678 20-32-06 SMITH J'), 'Smith J', 'account numbers and sort codes removed');
+assert.ok(!/\d{6}/.test(CSV.cleanShop('TFR 40-11-62 71234567 SAVINGS')), 'no long numbers kept');
+assert.equal(CSV.cleanShop('BP STAPLEHURST'), 'BP Staplehurst');
+assert.ok(CSV.nameMatches('Tesco Stores', 'tesco'));
+assert.ok(!CSV.nameMatches('Tescoville', 'tesco'));
+assert.equal(CSV.hintCategory('Shell Staplehurst'), 'car.fuel');
+assert.equal(CSV.hintCategory('EE Limited'), 'bills.phones');
+assert.equal(CSV.hintCategory('Coffee Beans Ltd'), 'food.eatingout');
+assert.equal(CSV.hintCategory('Peep Show'), null, 'short names only as whole words');
+
+// Real-world layouts (made-up values): column detection and reading
+const layouts = {
+  monzo: ['Transaction ID,Date,Time,Type,Name,Emoji,Category,Amount,Currency,Local amount,Local currency,Notes and #tags,Address,Receipt,Description,Category split,Money Out,Money In',
+    'tx_1,02/11/2026,10:01:00,Card payment,Tesco,🛒,Groceries,-12.50,GBP,-12.50,GBP,,,,TESCO STORES 3245,,-12.50,',
+    'tx_2,03/11/2026,09:00:00,Faster payment,Sree,,Income,500.00,GBP,500.00,GBP,,,,SREERAG,,,500.00'],
+  nationwide: ['"Account Name:","FlexDirect ****1234"', '"Account Balance:","£1,000.00"', '"Available Balance: ","£1,000.00"', '',
+    '"Date","Transaction type","Description","Paid out","Paid in","Balance"',
+    '"02 Nov 2026","Visa purchase","SHELL STAPLEHURST","£45.00","","£955.00"',
+    '"25 Oct 2026","Bank credit","CARE HOME LTD SALARY","","£1,500.00","£1,000.00"'],
+  lloyds: ['Transaction Date,Transaction Type,Sort Code,Account Number,Transaction Description,Debit Amount,Credit Amount,Balance',
+    '02/11/2026,DEB,\'30-99-50,12345678,COSTA COFFEE 1234,3.40,,996.60',
+    '01/11/2026,DD,\'30-99-50,12345678,OCTOPUS ENERGY,88.50,,1000.00'],
+  barclays: ['Number,Date,Account,Amount,Subcategory,Memo', ',02/11/2026,20-32-06 12345678,-9.99,Direct Debit,NETFLIX.COM', ',03/11/2026,20-32-06 12345678,-250.00,Direct Debit,BLACK HORSE FINANCE'],
+  amex: ['Date,Description,Amount', '02/11/2026,TESCO STORES 2345,30.00', '05/11/2026,PAYMENT RECEIVED - THANK YOU,-100.00', '06/11/2026,ARGOS LTD,15.00'],
+  starling: ['Date,Counter Party,Reference,Type,Amount (GBP),Balance (GBP),Spending Category,Notes', '02/11/2026,Aldi,ALDI 123,CONTACTLESS,-20.00,980.00,GROCERIES,'],
+  hsbc: ['02/11/2026,SAINSBURYS S/MKTS,-15.20', '03/11/2026,PAYPAL *EBAY,-8.00', '04/11/2026,MYSTERY SHOP 77,-2.00'],
+  revolut: ['Type,Product,Started Date,Completed Date,Description,Amount,Fee,Currency,State,Balance', 'CARD_PAYMENT,Current,2026-11-01 10:00:00,2026-11-02 10:00:00,Uber,-12.00,0.00,GBP,COMPLETED,88.00'],
+};
+const readOf = (name, account = { id: 'x', type: 'current' }) => {
+  const rows = CSV.parseCSV(layouts[name].join('\n'));
+  const map = CSV.detectColumns(rows);
+  return { map, ...CSV.readRows(rows, map, CSV.guessSpendSign(rows, map, account)) };
+};
+let rd = readOf('monzo');
+assert.equal(rd.map.header[rd.map.desc], 'Name');
+assert.deepEqual(rd.rows.map((r) => [r.date, r.desc, r.flow]), [['2026-11-02', 'Tesco', -1250], ['2026-11-03', 'Sree', 50000]]);
+rd = readOf('nationwide');
+assert.equal(rd.map.headerIndex, 3, 'blank lines are dropped, so the header is the 4th row');
+assert.deepEqual(rd.rows.map((r) => [r.date, r.flow]), [['2026-11-02', -4500], ['2026-10-25', 150000]]);
+rd = readOf('lloyds');
+assert.equal(rd.map.header[rd.map.desc], 'Transaction Description');
+assert.deepEqual(rd.rows.map((r) => r.flow), [-340, -8850]);
+rd = readOf('barclays');
+assert.equal(rd.map.header[rd.map.desc], 'Memo');
+assert.deepEqual(rd.rows.map((r) => r.flow), [-999, -25000]);
+rd = readOf('amex', { id: 'amex', type: 'credit' });
+assert.deepEqual(rd.rows.map((r) => r.flow), [-3000, 10000, -1500], 'card statement: spending positive');
+rd = readOf('starling');
+assert.equal(rd.map.header[rd.map.desc], 'Counter Party');
+assert.deepEqual(rd.rows.map((r) => r.flow), [-2000]);
+rd = readOf('hsbc');
+assert.equal(rd.map.headerIndex, -1);
+assert.deepEqual(rd.rows.map((r) => [r.date, r.desc, r.flow]), [['2026-11-02', 'SAINSBURYS S/MKTS', -1520], ['2026-11-03', 'PAYPAL *EBAY', -800], ['2026-11-04', 'MYSTERY SHOP 77', -200]]);
+rd = readOf('revolut');
+assert.deepEqual(rd.rows.map((r) => [r.date, r.flow]), [['2026-11-02', -1200]]);
+
+// Building the import: duplicates, bills, repayments, card payments, transfers, closed months
+const iAcc = [
+  { id: 'monzo', name: 'Monzo current', bank: 'Monzo', owner: 'sha', type: 'current' },
+  { id: 'barc', name: 'Barclays', bank: 'Barclays', owner: 'sree', type: 'current' },
+  { id: 'amex', name: 'Amex', bank: 'American Express', owner: 'sha', type: 'credit' },
+  { id: 'loan', name: 'Car finance', bank: 'Black Horse', owner: 'sree', type: 'loan' },
+];
+const iTx = [
+  t({ id: 'e1', type: 'spend', amount: 1520, date: '2026-11-01', accountId: 'monzo', categoryId: 'food.groceries', shop: 'Sainsburys' }),
+  t({ id: 'e2', type: 'spend', amount: 4200, date: '2026-10-01', accountId: 'monzo', categoryId: 'car.fuel', shop: 'Shell' }),
+];
+const iBills = [{ id: 'oct', name: 'Octopus', kind: 'bill', amount: 8850, freq: 'monthly', dueDay: 1, accountId: 'monzo', shop: 'Octopus Energy', categoryId: 'bills.energy' },
+  { id: 'cf', name: 'Car finance', kind: 'repayment', amount: 25000, freq: 'monthly', dueDay: 3, accountId: 'monzo', toAccountId: 'loan', shop: 'Black Horse' }];
+const stmt = [
+  { line: 2, date: '2026-11-02', desc: 'SAINSBURYS S/MKTS', flow: -1520 }, // duplicate of e1 (1 day apart)
+  { line: 3, date: '2026-11-01', desc: 'DD OCTOPUS ENERGY LTD', flow: -9100 }, // bill
+  { line: 4, date: '2026-11-03', desc: 'BLACK HORSE FINANCE 12345678', flow: -25000 }, // repayment bill → transfer to loan
+  { line: 5, date: '2026-11-04', desc: 'AMERICAN EXPRESS', flow: -10000 }, // paying the card
+  { line: 6, date: '2026-11-05', desc: 'SHELL STAPLEHURST', flow: -4000 }, // shop memory
+  { line: 7, date: '2026-11-06', desc: 'NETFLIX.COM', flow: -999 }, // hint
+  { line: 8, date: '2026-11-07', desc: 'MYSTERY SHOP 77', flow: -200 }, // needs a category
+  { line: 9, date: '2026-11-08', desc: 'TFR TO SAVINGS 12345678', flow: -5000 }, // own transfer
+  { line: 10, date: '2026-11-09', desc: 'SREERAG VINOD', flow: 30000 }, // from Sree: transfer
+  { line: 11, date: '2026-10-25', desc: 'CARE HOME SALARY', flow: 150000 }, // closed month
+  { line: 12, date: '2026-11-25', desc: 'CARE HOME SALARY', flow: 150000 }, // income
+];
+const items = CSV.buildImport({ rows: stmt }, { account: iAcc[0], accounts: iAcc, txns: iTx, bills: iBills, shopIdx: D.shopIndex(iTx), closedMonths: ['2026-10'], incomeCategory: 'income.sha' });
+const brief = items.map((x) => [x.line, x.status, x.type, x.categoryId || x.toAccountId || '', x.billId || '', x.include]);
+assert.deepEqual(brief, [
+  [2, 'duplicate', 'spend', '', '', false],
+  [3, 'ready', 'spend', 'bills.energy', 'oct', true],
+  [4, 'ready', 'transfer', 'loan', 'cf', true],
+  [5, 'ready', 'transfer', 'amex', '', true],
+  [6, 'ready', 'spend', 'car.fuel', '', true],
+  [7, 'ready', 'spend', 'bills.subs', '', true],
+  [8, 'needs', 'spend', '', '', false],
+  [9, 'transfer', 'transfer', '', '', false],
+  [10, 'transfer', 'transfer', '', '', false],
+  [11, 'closed', 'income', '', '', false],
+  [12, 'ready', 'income', 'income.sha', '', true],
+]);
+assert.equal(items[1].shop, 'Octopus Energy', 'bill shop name used so it counts as paid');
+assert.equal(items[4].shop, 'Shell', 'shop memory name used');
+assert.ok(items.every((x) => !/\d{6}/.test(`${x.shop} ${x.note} ${x.raw}`)), 'no account numbers kept');
+assert.equal(CSV.itemReady(items[6]), false);
+assert.equal(CSV.itemReady({ ...items[6], categoryId: 'other.general' }), true);
+assert.equal(CSV.itemReady({ ...items[8], fromAccountId: 'barc' }), true);
+assert.deepEqual(CSV.itemToEntry({ ...items[8], fromAccountId: 'barc' }, 'monzo'), { date: '2026-11-09', month: '2026-11', calc: null, source: 'import', shop: '', tripId: null, flag: false, flagFor: null, flagNote: '', billId: null, note: 'Sreerag Vinod', type: 'transfer', amount: 30000, accountId: 'barc', toAccountId: 'monzo', categoryId: null });
+assert.equal(CSV.itemToEntry(items[1], 'monzo').shop, 'Octopus Energy');
+assert.equal(CSV.itemToEntry(items[1], 'monzo').amount, 9100);
+// The bill then shows as paid
+assert.ok(D.matchesBill({ ...CSV.itemToEntry(items[1], 'monzo') }, iBills[0]));
+// Card statement: a refund becomes a + adjustment, the payment is a transfer to skip
+const cardItems = CSV.buildImport({ rows: [{ line: 2, date: '2026-11-05', desc: 'PAYMENT RECEIVED - THANK YOU', flow: 10000 }, { line: 3, date: '2026-11-06', desc: 'ARGOS REFUND', flow: 1500 }, { line: 4, date: '2026-11-06', desc: 'ARGOS LTD', flow: -1500 }] },
+  { account: iAcc[2], accounts: iAcc, txns: [], bills: [], shopIdx: new Map() });
+assert.deepEqual(cardItems.map((x) => [x.status, x.type, x.categoryId]), [['transfer', 'transfer', ''], ['ready', 'adjust', ''], ['ready', 'spend', 'shopping.household']]);
+assert.equal(CSV.itemToEntry(cardItems[1], 'amex').amount, 1500);
+
 console.log('All data and calculator tests passed');
