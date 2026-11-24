@@ -519,3 +519,10 @@ input[type="date"].input { -webkit-appearance: none; appearance: none; }
 .imp-bar .btn[disabled] { opacity: 0.5; }
 @media (max-width: 360px) { .map-grid { grid-template-columns: 1fr; } }
 .pot-card .entry-sub, .toggle-row .entry-title, .toggle-row .entry-sub { white-space: normal; }
+/* import status on accounts */
+.imp-line { display: inline-flex; align-items: center; gap: 4px; color: var(--quiet); }
+.imp-line.due { color: var(--warn); font-weight: 600; }
+.chip.acc-pick { align-items: flex-start; }
+.chip.acc-pick > span:first-child { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+.chip.acc-pick.on .small { color: var(--cream-2); }
+.chip.acc-pick.due:not(.on) { border-color: #E9CFA3; background: #FBF2E2; }

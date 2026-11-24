@@ -686,10 +686,26 @@ try {
   expect(await page.locator('#results [data-act="edit-entry"]').count() === 2, 'imported mystery shop entries not found');
   expect((await page.textContent('#results')).includes('Household'), 'imported category not used');
   await page.fill('#q', '');
+  // the account now shows how far it's imported, and the done screen said so
+  await go('accounts');
+  expect((await txt('[data-act="edit-account"]:has-text("Monzo") .imp-line')).includes(`Imported to`), 'imported-to line missing on Monzo');
+  expect(await page.locator('[data-act="edit-account"]:has-text("Barclays") .imp-line').count() === 0, 'Barclays was never imported');
+  // import straight from inside an account
+  await click('[data-act="edit-account"]:has-text("Barclays")');
+  await click('.sheet [data-act="imp-from-account"]');
+  await page.waitForSelector('.acc-pick.on:has-text("Barclays")');
+  expect(await page.locator('#imp-file:not([disabled])').count() === 1, 'file picker should be ready for Barclays');
+  expect((await txt('.acc-pick:has-text("Barclays")')).includes('Not imported yet'), 'Barclays chip should say not imported');
+  expect(await page.locator('#nav .nav-btn.on[data-v="accounts"]').count() === 1, 'Accounts tab should stay highlighted');
+  await shot('55-import-from-account');
+  await click('.subhead [data-act="nav"]');
+  await page.waitForSelector('[data-act="imp-from-account"][data-id=""]');
+  await shot('56-accounts-imported');
   // importing the same file again finds only duplicates
   await go('more');
   await click('[data-act="nav"][data-v="import"]');
   await page.waitForSelector('#imp-file');
+  await click('[data-act="imp-acc"]:has-text("Monzo")');
   await page.setInputFiles('#imp-file', file);
   await page.waitForSelector('.imp-bar');
   expect(await heading('ready') === '0', `re-import should find nothing new, got ${await heading('ready')}`);

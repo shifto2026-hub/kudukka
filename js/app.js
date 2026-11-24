@@ -513,6 +513,14 @@ function viewEntries() {
     <div id="results">${entriesResults()}</div>`;
 }
 
+// "Imported to 30 Nov" under an account, amber when last month still needs its statement.
+function importLine(a) {
+  const to = D.importedTo(a, S.txns);
+  if (!to) return '';
+  const due = D.importDue(a, S.txns);
+  return `<span class="entry-sub imp-line${due ? ' due' : ''}">${icon('upload', 11)} Imported to ${D.shortDate(to)}${to.slice(0, 4) !== D.todayISO().slice(0, 4) ? ` ${to.slice(0, 4)}` : ''}${due ? ' · last month to import' : ''}</span>`;
+}
+
 function viewAccounts() {
   const show = (a) => (S.person === 'home' || a.owner === S.person) && (S.showArchived || !a.archived);
   const accs = S.accounts.filter(show);
@@ -529,7 +537,7 @@ function viewAccounts() {
     return `<li><button type="button" class="entry" data-act="edit-account" data-id="${a.id}">
       <span class="gicon" style="background:${D.PEOPLE[a.owner].color};color:${D.PEOPLE[a.owner].ink}">${icon('bank', 18)}</span>
       <span class="entry-main"><span class="entry-title">${esc(a.name)}${a.archived ? ' <span class="tag">Archived</span>' : ''}</span>
-      <span class="entry-sub">${D.PEOPLE[a.owner].name} · ${esc(a.bank || D.ACCOUNT_TYPES[a.type])}</span></span>
+      <span class="entry-sub">${D.PEOPLE[a.owner].name} · ${esc(a.bank || D.ACCOUNT_TYPES[a.type])}</span>${importLine(a)}</span>
       <span class="entry-amt ${b < 0 ? 'neg' : ''}">${D.money(b)}</span></button></li>`;
   };
   const cardRow = (a) => {
@@ -540,7 +548,7 @@ function viewAccounts() {
       <span class="entry-top">
         <span class="gicon" style="background:${D.PEOPLE[a.owner].color};color:${D.PEOPLE[a.owner].ink}">${icon('card', 18)}</span>
         <span class="entry-main"><span class="entry-title">${esc(a.name)}${a.last4 ? ` ·· ${esc(a.last4)}` : ''}${a.archived ? ' <span class="tag">Archived</span>' : ''}</span>
-        <span class="entry-sub">${D.PEOPLE[a.owner].name}${a.dueDay ? ` · Due on the ${ordinal(a.dueDay)}` : ''}</span></span>
+        <span class="entry-sub">${D.PEOPLE[a.owner].name}${a.dueDay ? ` · Due on the ${ordinal(a.dueDay)}` : ''}</span>${importLine(a)}</span>
         <span class="entry-amt"><span class="small muted block">${credit ? 'In credit' : 'Owed'}</span>${D.money(credit || owed)}</span>
       </span>
       ${a.creditLimit ? `<span class="bar thin full"><span style="width:${pct}%;background:${pct > 80 ? 'var(--warn)' : 'var(--rust)'}"></span></span><span class="entry-sub">${D.money(owed)} of ${D.money(a.creditLimit)} limit${a.apr ? ` · ${a.apr}% APR` : ''}</span>` : ''}
@@ -554,7 +562,7 @@ function viewAccounts() {
       <span class="entry-top">
         <span class="gicon" style="background:${D.PEOPLE[a.owner].color};color:${D.PEOPLE[a.owner].ink}">${icon('loan', 18)}</span>
         <span class="entry-main"><span class="entry-title">${esc(a.name)}${a.archived ? ' <span class="tag">Archived</span>' : ''}</span>
-        <span class="entry-sub">${D.PEOPLE[a.owner].name}${a.apr ? ` · ${a.apr}% APR` : ''}${d && d.payment ? ` · ${D.money(d.payment)} a month` : ''}</span></span>
+        <span class="entry-sub">${D.PEOPLE[a.owner].name}${a.apr ? ` · ${a.apr}% APR` : ''}${d && d.payment ? ` · ${D.money(d.payment)} a month` : ''}</span>${importLine(a)}</span>
         <span class="entry-amt"><span class="small muted block">${owed ? 'Owed' : 'Paid off'}</span>${D.money(owed)}</span>
       </span>
       ${free ? `<span class="entry-sub ok-text">${icon('check', 12)} ${free} at this rate</span>` : d && !d.payment ? '<span class="entry-sub">Add its monthly repayment in Bills to see a debt-free date</span>' : ''}
@@ -570,7 +578,8 @@ function viewAccounts() {
     <div class="row-between"><h2 class="h3">Credit cards</h2></div>
     ${cards.length ? `<ul class="entries card tight">${cards.map(cardRow).join('')}</ul>` : '<p class="muted pad">No credit cards yet.</p>'}
     ${loans.length ? `<div class="row-between"><h2 class="h3">Loans and finance</h2></div><ul class="entries card tight">${loans.map(loanRow).join('')}</ul>` : ''}
-    <button type="button" class="btn btn-ghost btn-block" data-act="add-account">${icon('plus', 18)} Add account, card or loan</button>
+    <div class="btn-row"><button type="button" class="btn btn-ghost grow" data-act="add-account">${icon('plus', 18)} Add account</button>
+      <button type="button" class="btn btn-ghost grow" data-act="imp-from-account" data-id="">${icon('upload', 18)} Import statements</button></div>
     ${archivedCount ? `<button type="button" class="link center-block" data-act="toggle-archived">${S.showArchived ? 'Hide' : 'Show'} archived (${archivedCount})</button>` : ''}`;
 }
 
@@ -1057,7 +1066,7 @@ function importStart() {
       <li>Choose the account it's from, then the file.</li>
       <li>Check the list, then import. Anything already in Kudukka is skipped.</li></ol>
       <p class="small muted">${icon('lock', 12)} Only the date, shop name and amount are kept. Account numbers and sort codes are removed.</p></section>
-    <div class="field"><span class="label">Statement from</span>${accs.length ? `<div class="chips">${accs.map((a) => `<button type="button" class="chip acc${I.accountId === a.id ? ' on' : ''}" data-act="imp-acc" data-id="${a.id}">${ownerDot(a.owner)}${esc(a.name)}</button>`).join('')}</div>` : '<p class="muted">Add an account first.</p>'}</div>
+    <div class="field"><span class="label">Statement from</span>${accs.length ? `<div class="chips">${accs.map((a) => { const to = D.importedTo(a, S.txns); const due = D.importDue(a, S.txns); return `<button type="button" class="chip quick acc-pick${I.accountId === a.id ? ' on' : ''}${due ? ' due' : ''}" data-act="imp-acc" data-id="${a.id}"><span>${ownerDot(a.owner)}${esc(a.name)}</span><span class="small">${to ? `Imported to ${D.shortDate(to)}` : 'Not imported yet'}</span></button>`; }).join('')}</div>` : '<p class="muted">Add an account first.</p>'}</div>
     <label class="btn btn-primary btn-block file-btn${I.accountId ? '' : ' is-off'}">${icon('upload', 18)} Choose CSV file
       <input type="file" id="imp-file" accept=".csv,text/csv,text/plain,application/vnd.ms-excel" ${I.accountId ? '' : 'disabled'}></label>
     ${I.accountId ? '' : '<p class="hint center">Choose the account first.</p>'}
@@ -1114,18 +1123,23 @@ function importReview() {
       ${k === 'transfer' ? '<p class="small muted pad">Usually already entered from the other account. Tap one to add it as a transfer.</p>' : ''}
       <ul class="entries card tight imp-list">${list.map(impRow).join('')}</ul>`).join('')}
     <div class="imp-bar"><button type="button" class="btn btn-ghost" data-act="imp-cancel">Cancel</button>
-      <button type="button" class="btn btn-primary grow" data-act="imp-go" ${count ? '' : 'disabled'}>Import ${count} ${count === 1 ? 'entry' : 'entries'}</button></div>`;
+      <button type="button" class="btn btn-primary grow" data-act="imp-go" ${count ? '' : 'disabled'}>Import ${count} ${count === 1 ? 'entry' : 'entries'}</button></div>
+    ${!count && items.length && items.every((it) => ['duplicate', 'closed', 'skip'].includes(it.status)) ? '<p class="hint center">Everything in this file is already in Kudukka.</p>' : ''}`;
 }
 
 function importDone() {
   const I = S.imp;
   const acc = accountById(I.accountId);
+  // Other accounts imported before but not up to this file's last date.
+  const others = activeAccounts().filter((a) => a.id !== I.accountId && D.importedTo(a, S.txns) && (!I.upTo || D.importedTo(a, S.txns) < I.upTo));
   return `${subhead('Import a statement', 'more')}
     <section class="card welcome-card"><span class="seal">${icon('check', 30)}</span>
       <h2 class="h2">${I.imported} ${I.imported === 1 ? 'entry' : 'entries'} added</h2>
       <p class="muted">From ${esc(I.fileName)}${acc ? ` into ${esc(acc.name)}` : ''}.${I.left ? ` ${I.left} ${I.left === 1 ? 'row was' : 'rows were'} left out.` : ''}</p>
+      ${I.upTo ? `<p class="small muted">${esc(acc ? acc.name : 'This account')} is now imported up to ${D.dayLabel(I.upTo)}.</p>` : ''}
       <button type="button" class="btn btn-primary btn-block" data-act="imp-see">See entries</button>
-      <button type="button" class="btn btn-ghost btn-block" data-act="imp-again">Import another file</button></section>`;
+      <button type="button" class="btn btn-ghost btn-block" data-act="imp-again">Import another file</button></section>
+    ${others.length ? `<h3 class="day">Still to import up to ${D.shortDate(I.upTo)}</h3><div class="chips">${others.map((a) => `<button type="button" class="chip quick acc-pick" data-act="imp-acc" data-id="${a.id}"><span>${ownerDot(a.owner)}${esc(a.name)}</span><span class="small">Imported to ${D.shortDate(D.importedTo(a, S.txns))}</span></button>`).join('')}</div>` : ''}`;
 }
 
 async function loadStatement(file) {
@@ -1241,7 +1255,7 @@ function renderNav() {
   const nav = $('#nav');
   if (!nav) return;
   const inner = ['trips', 'trip', 'categories', 'bills', 'plan', 'pots', 'pot', 'reports', 'close', 'import'];
-  const tab = inner.includes(S.view) ? (S.backTo === 'home' && !['trips', 'trip', 'categories'].includes(S.view) ? 'home' : 'more') : S.view;
+  const tab = inner.includes(S.view) ? (['home', 'accounts'].includes(S.backTo) && !['trips', 'trip', 'categories'].includes(S.view) ? S.backTo : 'more') : S.view;
   const b = (v, ic, label) => `<button type="button" class="nav-btn${tab === v ? ' on' : ''}" data-act="nav" data-v="${v}" ${tab === v ? 'aria-current="page"' : ''}>${icon(ic, 24)}<span>${label}</span></button>`;
   nav.innerHTML = `${b('home', 'home', 'Home')}${b('entries', 'list', 'Entries')}
     <div class="nav-add-wrap"><button type="button" class="nav-add" data-act="add-entry" aria-label="Add an entry">${icon('plus', 28)}</button></div>
@@ -1574,7 +1588,9 @@ function sheetAccount() {
       <label class="label" for="a-check">Check against your bank</label>
       <div class="amount-wrap small"><span class="pound">£</span><input id="a-check" name="checkText" class="input bare" inputmode="decimal" placeholder="${isOwed ? 'Owed now, from your bank app' : 'Balance now, from your bank app'}" value="${esc(f.checkText)}"></div>
       <div class="check-line" id="check-line">${checkLine()}</div>
-    </div>`}
+    </div>
+    <button type="button" class="btn btn-ghost btn-block" data-act="imp-from-account" data-id="${f.id}">${icon('upload', 18)} Import a statement for ${esc(f.name || 'this account')}</button>
+    ${(() => { const a = accountById(f.id); const to = a && D.importedTo(a, S.txns); return to ? `<p class="hint block center">Imported up to ${D.dayLabel(to)} ${to.slice(0, 4)}</p>` : ''; })()}`}
     <div class="sheet-actions">
       ${f.isNew ? '' : used
         ? `<button type="button" class="btn btn-ghost" data-act="archive-account">${f.archived ? 'Unarchive' : 'Archive'}</button>`
@@ -2399,7 +2415,15 @@ document.addEventListener('click', async (ev) => {
       break;
     }
     // ----- Phase 5: import -----
-    case 'imp-acc': S.imp = { step: 'start', accountId: el.dataset.id }; renderMain(); break;
+    case 'imp-acc': S.imp = { step: 'start', accountId: el.dataset.id }; window.scrollTo(0, 0); renderMain(); break;
+    case 'imp-from-account': {
+      const from = S.view;
+      closeSheet();
+      S.imp = { step: 'start', accountId: el.dataset.id || (S.imp && S.imp.step !== 'done' ? S.imp.accountId : '') };
+      S.backTo = from === 'accounts' ? 'accounts' : S.backTo;
+      S.view = 'import'; S.viewArg = null; window.scrollTo(0, 0); renderMain(); renderNav();
+      break;
+    }
     case 'imp-showmap': S.imp.showMap = !S.imp.showMap; renderMain(); break;
     case 'imp-order': S.imp.map.order = el.dataset.o; rebuildImport(); renderMain(); break;
     case 'imp-sign': S.imp.spendSign = el.dataset.s; rebuildImport(); renderMain(); break;
@@ -2435,14 +2459,19 @@ document.addEventListener('click', async (ev) => {
       const writes = list.map((it) => {
         const id = fb.newId('transactions');
         ids.push(id);
-        return fb.saveDoc('transactions', id, { ...CSV.itemToEntry(it, I.accountId), createdBy: role, updatedBy: role }, true);
+        return fb.saveDoc('transactions', id, { ...CSV.itemToEntry(it, I.accountId), importAccount: I.accountId, createdBy: role, updatedBy: role }, true);
       });
+      // The file's last date (all readable rows, even ones already in Kudukka) moves the account's "imported to".
+      const acc = accountById(I.accountId);
+      const prev = { importedTo: (acc && acc.importedTo) || null, importedAt: (acc && acc.importedAt) || null };
+      const upTo = I.items.reduce((m, it) => (it.date > m ? it.date : m), '');
+      if (acc && upTo && (!prev.importedTo || upTo > prev.importedTo)) writes.push(fb.saveDoc('accounts', acc.id, { importedTo: upTo, importedAt: D.todayISO() }, false));
       Promise.all(writes).catch(() => toast("Some entries didn't save. Check your connection."));
       LS.set(`imp.${I.accountId}`, { spendSign: I.spendSign });
-      S.imp = { step: 'done', accountId: I.accountId, fileName: I.fileName, imported: list.length, left: I.items.length - list.length };
+      S.imp = { step: 'done', accountId: I.accountId, fileName: I.fileName, imported: list.length, left: I.items.length - list.length, upTo };
       window.scrollTo(0, 0);
       renderMain();
-      toast(`Imported ${list.length} ${list.length === 1 ? 'entry' : 'entries'}`, () => Promise.all(ids.map((id) => fb.removeDoc('transactions', id))));
+      toast(`Imported ${list.length} ${list.length === 1 ? 'entry' : 'entries'}`, () => Promise.all([...ids.map((id) => fb.removeDoc('transactions', id)), acc ? fb.saveDoc('accounts', acc.id, prev, false) : null]));
       break;
     }
     case 'imp-again': S.imp = { step: 'start', accountId: S.imp.accountId }; renderMain(); break;

@@ -14,7 +14,7 @@ Hosted on GitHub Pages at https://shifto2026-hub.github.io/kudukka (repo is publ
 - Pots (Phase 4, optional): `pots/{id}` `{ name, target, byMonth (YYYY-MM), accountId, preset, archived }`; money in/out is `potMoves/{id}` `{ potId, amount (signed pence), date, note }`. Pots are earmarks inside Kudukka, not bank movements.
 - Months (Phase 4): `months/{YYYY-MM}` `{ closed, closedAt, closedBy, balanceChecks: { accountId: pence as the bank shows it (owed for cards/loans) }, reportSeen }`. Entries in a closed month can't be saved or deleted until it's reopened.
 - Category subs may carry `need` (bool) for the 50/30/20 report; missing → `defaultNeed()` in `js/data.js`.
-- Imported entries (Phase 5) carry `source: 'import'`. Import keeps only date, cleaned shop name and amount: `cleanShop()` strips sort codes and long numbers.
+- Imported entries (Phase 5) carry `source: 'import'` and `importAccount` (the account whose file they came from). Accounts store `importedTo` (last date of the latest file) and `importedAt`; see `importedTo()` / `importDue()` in `js/data.js`. Import keeps only date, cleaned shop name and amount: `cleanShop()` strips sort codes and long numbers.
 - Money month: pay on the payday covers the next month (payday 25 → '2026-11' runs 25 Oct–24 Nov). Account type `loan` is debt like `credit` (negative balance, optional `apr`).
 
 ## Files

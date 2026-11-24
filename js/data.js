@@ -811,3 +811,22 @@ export function closeChecks({ month, txns, accounts, bills = [], closing = {} })
     flagged, unsorted, unpaid, count: inMonth.length,
   };
 }
+
+// ---------- import status per account (Phase 5) ----------
+// The last day a statement for this account has been imported up to. Stored on the account when a file is
+// imported; for older imports, worked out from imported entries.
+export function importedTo(account, txns = []) {
+  let best = account.importedTo || null;
+  for (const t of txns) {
+    if (t.source !== 'import') continue;
+    const mine = t.importAccount ? t.importAccount === account.id : t.accountId === account.id;
+    if (mine && (!best || t.date > best)) best = t.date;
+  }
+  return best;
+}
+// Accounts that have been imported before but not up to the end of last month (from the 2nd of the month).
+export function importDue(account, txns, today = todayISO()) {
+  const to = importedTo(account, txns);
+  if (!to || Number(today.slice(8)) < 2) return false;
+  return to < monthEnd(shiftMonth(monthOf(today), -1));
+}

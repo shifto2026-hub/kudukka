@@ -1,6 +1,6 @@
 // Kudukka service worker: keeps the app shell available offline.
 // Bump VERSION when files change so phones pick up the new version.
-const VERSION = 'kudukka-v10';
+const VERSION = 'kudukka-v11';
 const SHELL = [
   './',
   'index.html',

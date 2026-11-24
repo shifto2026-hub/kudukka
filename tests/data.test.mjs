@@ -489,4 +489,20 @@ const cardItems = CSV.buildImport({ rows: [{ line: 2, date: '2026-11-05', desc: 
 assert.deepEqual(cardItems.map((x) => [x.status, x.type, x.categoryId]), [['transfer', 'transfer', ''], ['ready', 'adjust', ''], ['ready', 'spend', 'shopping.household']]);
 assert.equal(CSV.itemToEntry(cardItems[1], 'amex').amount, 1500);
 
+// import status per account
+const impTx = [
+  { id: 'i1', source: 'import', importAccount: 'hsbc', accountId: 'hsbc', date: '2026-10-30' },
+  { id: 'i2', source: 'import', importAccount: 'hsbc', accountId: 'amex', toAccountId: 'amex', type: 'transfer', date: '2026-10-31' }, // from HSBC's file
+  { id: 'i3', source: 'import', accountId: 'amex', date: '2026-10-20' }, // older import without importAccount
+  { id: 'i4', accountId: 'amex', date: '2026-11-20' }, // typed by hand: doesn't count
+];
+assert.equal(D.importedTo({ id: 'hsbc' }, impTx), '2026-10-31');
+assert.equal(D.importedTo({ id: 'amex' }, impTx), '2026-10-20');
+assert.equal(D.importedTo({ id: 'amex', importedTo: '2026-10-28' }, impTx), '2026-10-28', 'stored date wins when later');
+assert.equal(D.importedTo({ id: 'cash' }, impTx), null);
+assert.equal(D.importDue({ id: 'hsbc' }, impTx, '2026-11-24'), false, 'October fully imported');
+assert.equal(D.importDue({ id: 'amex' }, impTx, '2026-11-24'), true, 'October not finished');
+assert.equal(D.importDue({ id: 'amex' }, impTx, '2026-11-01'), false, 'not nagged on the 1st');
+assert.equal(D.importDue({ id: 'cash' }, impTx, '2026-11-24'), false, 'never imported: no nag');
+
 console.log('All data and calculator tests passed');
