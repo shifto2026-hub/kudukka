@@ -392,13 +392,14 @@ expect(await page.locator('h3.day').count() === 1, 'calendar day not opened');
 await shot('35-bills-calendar');
 await click('[data-act="bills-mode"][data-m="list"]');
 await click('[data-act="bills-win"][data-d="1"]');
-expect((await txt('.win-title b')).includes("'s bills"), 'next window not shown');
+expect((await txt('.win-title b')).startsWith('Bills in ') && !(await txt('.win-title b')).includes(new Date().toLocaleString('en-GB', { month: 'long' })), `next month not shown: ${await txt('.win-title b')}`);
 await click('[data-act="bills-win"][data-d="-1"]');
 
 // 8. Payday plan
 await go('more');
 await click('[data-act="nav"][data-v="plan"]');
 await page.waitForSelector('.plan-head');
+expect((await txt('.plan-head')).includes('Until next payday'), 'plan should count down to payday, not name a month');
 expect((await txt('.plan-head')).includes('Payday: 25th'), 'payday not shown as 25th');
 expect(await page.locator('.tips .tip').count() >= 1, 'no suggestions');
 expect(await page.locator('.guard-status').count() >= 1, 'direct debit guard missing');

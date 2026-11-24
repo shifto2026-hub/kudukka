@@ -652,7 +652,7 @@ function billsCalendar(rows, win) {
     const iso = D.addDays(start, i);
     const list = byDay[iso] || [];
     const dots = list.slice(0, 4).map((r) => `<span class="cal-dot ${r.paid ? 'ok' : r.status === 'late' ? 'warn' : 'due'}"></span>`).join('');
-    const isPay = iso === start;
+    const isPay = Number(iso.slice(8)) === Math.min(payday(), Number(win.end.slice(8)));
     cells += `<button type="button" class="cal-cell${iso === today ? ' today' : ''}${S.billsDay === iso ? ' on' : ''}${isPay ? ' pay' : ''}" data-act="cal-day" data-d="${iso}" aria-label="${D.dayLabel(iso)}${list.length ? `, ${list.length} bill${list.length > 1 ? 's' : ''}` : ''}${isPay ? ', payday' : ''}">
       <span class="cal-num">${Number(iso.slice(8))}</span><span class="cal-dots">${isPay ? `<span class="cal-pay">${icon('income', 11)}</span>` : ''}${dots}</span></button>`;
   }
@@ -677,12 +677,12 @@ function detectedCards() {
 }
 
 function viewBills() {
-  let win = D.moneyMonth(D.todayISO(), payday());
-  for (let i = 0; i < S.billsOffset; i++) win = D.nextMoneyMonth(win, payday());
+  const month = D.shiftMonth(D.currentMonth(), S.billsOffset);
+  const win = D.calendarWindow(month);
   const rows = D.billsForWindow(S.bills, S.txns, win, D.todayISO());
   const total = rows.reduce((n, r) => n + r.amount, 0);
   const paid = rows.filter((r) => r.paid).reduce((n, r) => n + r.amount, 0);
-  const nextWin = D.nextMoneyMonth(win, payday());
+  const nextWin = D.calendarWindow(D.shiftMonth(month, 1));
   const nextTotal = D.billsForWindow(S.bills, S.txns, nextWin, D.todayISO()).reduce((n, r) => n + r.expected, 0);
   const order = { late: 0, due: 1, paid: 2 };
   const sorted = [...rows].sort((a, b) => order[a.status] - order[b.status] || (a.due < b.due ? -1 : 1));
@@ -690,8 +690,8 @@ function viewBills() {
   const yearlySetAside = liveBills().filter((b) => b.freq === 'yearly').reduce((n, b) => n + D.billMonthly(b, S.txns), 0);
   return `${subhead('Bills', 'more')}
     <div class="win-nav">
-      <button type="button" class="icon-btn" data-act="bills-win" data-d="-1" ${S.billsOffset === 0 ? 'disabled' : ''} aria-label="Earlier">${icon('left', 20)}</button>
-      <div class="win-title"><b>${monthName(win.label)}'s bills</b><span class="muted small">${winLabel(win)}</span></div>
+      <button type="button" class="icon-btn" data-act="bills-win" data-d="-1" ${S.billsOffset <= -1 ? 'disabled' : ''} aria-label="Month before">${icon('left', 20)}</button>
+      <div class="win-title"><b>Bills in ${monthName(month)}</b><span class="muted small">${winLabel(win)}${month.slice(0, 4) !== D.currentMonth().slice(0, 4) ? ` ${month.slice(0, 4)}` : ''}</span></div>
       <button type="button" class="icon-btn" data-act="bills-win" data-d="1" ${S.billsOffset >= 2 ? 'disabled' : ''} aria-label="Later">${icon('right', 20)}</button>
     </div>
     <section class="totals">
@@ -703,7 +703,7 @@ function viewBills() {
     <div class="segs two" role="group" aria-label="View"><button type="button" class="seg${S.billsMode === 'list' ? ' on' : ''}" data-act="bills-mode" data-m="list">List</button><button type="button" class="seg${S.billsMode === 'cal' ? ' on' : ''}" data-act="bills-mode" data-m="cal">Calendar</button></div>
     ${S.billsMode === 'cal' ? billsCalendar(rows, win) : rows.length ? `<ul class="entries card tight">${sorted.map(billRow).join('')}</ul>` : `<section class="card"><p class="muted">${S.bills.length ? `No bills due in ${monthName(win.label)}.` : 'Add your rent, council tax, energy, phones and subscriptions. Kudukka then shows what’s promised each month and what’s still due.'}</p></section>`}
     <button type="button" class="btn btn-ghost btn-block" data-act="add-bill">${icon('plus', 18)} Add a bill or repayment</button>
-    <p class="muted small pad">${monthName(nextWin.label)} (${winLabel(nextWin)}): <b>${D.money(nextTotal)}</b> already promised.${yearlySetAside ? ` Yearly bills: put aside about <b>${D.money(yearlySetAside)}</b> a month.` : ''}</p>`;
+    <p class="muted small pad">${monthName(nextWin.label)}: <b>${D.money(nextTotal)}</b> already promised.${yearlySetAside ? ` Yearly bills: put aside about <b>${D.money(yearlySetAside)}</b> a month.` : ''}</p>`;
 }
 
 // ---------- Phase 3: payday plan ----------
@@ -740,7 +740,7 @@ function viewPlan() {
   const debts = D.debtsList(S.accounts, S.txns, S.bills);
   return `${subhead('Payday plan', 'more')}
     <section class="card plan-head">
-      <div class="row-between"><span class="muted small">Money for ${monthName(p.win.label)} · ${winLabel(p.win)}</span>
+      <div class="row-between"><span class="muted small">Until next payday · ${D.dayLabel(p.win.nextPayday)}</span>
         <button type="button" class="link" data-act="open-payday">Payday: ${ordinal(payday())} ${icon('edit', 14)}</button></div>
       <span class="muted small">Free to plan</span>
       <span class="big" style="color:${p.free < 0 ? 'var(--danger)' : 'var(--olive)'}">${D.money(p.free)}</span>
@@ -749,7 +749,7 @@ function viewPlan() {
         <li><span>In current accounts now</span><b>+${D.money(p.have)}</b></li>
         <li><button type="button" class="link-row" data-act="open-expected"><span>Pay still to come ${icon('edit', 13)}</span><b>+${D.money(p.coming)}</b></button>
           ${who.length ? `<span class="muted small">${who.map((k) => ((ex[k] || 0) > (p.received[k] || 0) ? `${D.PEOPLE[k].name}: ${D.money(p.received[k] || 0)} in of ~${D.money(ex[k])}` : `${D.PEOPLE[k].name}: ${D.money(p.received[k] || 0)} in`)).join(' · ')}</span>` : '<span class="muted small">Enter pay as Income, or tap to set what you expect</span>'}</li>
-        <li><button type="button" class="link-row" data-act="nav" data-v="bills"><span>Bills still due</span><b>−${D.money(p.billsDue)}</b></button></li>
+        <li><button type="button" class="link-row" data-act="nav" data-v="bills"><span>Bills still due before payday</span><b>−${D.money(p.billsDue)}</b></button></li>
         <li><span>Credit card balances</span><b>−${D.money(p.cardsOwed)}</b></li>
       </ul>
       ${p.saved ? `<span class="muted small">Not counted: ${D.money(p.saved)} in savings.</span>` : ''}
@@ -782,7 +782,7 @@ function planCards() {
     <button type="button" class="card stat link-card" data-act="nav" data-v="plan">
       <span class="muted small">Safe to spend</span><span class="big-sm">${D.money(p.safePerWeek)}</span><span class="small muted">a week till ${D.shortDate(p.win.nextPayday)}</span></button>
     <button type="button" class="card stat link-card" data-act="nav" data-v="bills">
-      <span class="muted small">Bills to pay</span><span class="big-sm">${D.money(due.reduce((n, r) => n + r.expected, 0))}</span>
+      <span class="muted small">Bills before payday</span><span class="big-sm">${D.money(due.reduce((n, r) => n + r.expected, 0))}</span>
       <span class="small muted">${rows.length ? (next ? `Next: ${esc(next.bill.name)} ${D.shortDate(next.due)}` : `All ${rows.length} paid`) : 'Add your bills'}</span></button>
   </section>`;
 }
@@ -946,6 +946,7 @@ function reportMonthView() {
       ${r.savedRate !== null ? `<span class="small muted">${r.left >= 0 ? `Kept ${pctText(r.savedRate)} of what came in` : 'More went out than came in'}</span>` : ''}
       <div class="row-between"><span>Came in</span><b>${D.money(r.income)}</b></div>${changeLine(r.income, r.prev.income, true)}
       <div class="row-between"><span>Went out</span><b>${D.money(r.spend)}</b></div>${changeLine(r.spend, r.prev.spend, false)}
+      ${(() => { const pf = D.payFromPayday(S.txns, S.accounts, R.month, S.person, payday()); return pf.amount && r.left > 0 ? `<p class="pay-note">${icon('income', 14)}<span>Includes ${D.money(pf.amount)} pay from ${D.shortDate(pf.from)} onwards, which you'll mostly use in ${monthName(D.shiftMonth(R.month, 1))}. What's left simply carries over.</span></p>` : ''; })()}
     </section>
     ${fiftyCard(r.needs, r.wants, r.income)}
     ${r.spend ? `<section class="card"><h2 class="h3">By category</h2>${catRows(r.byGroup, r.avgByGroup)}
@@ -1746,13 +1747,13 @@ function paydayPreview() {
   const day = Number(S.form.day);
   if (!(day >= 1 && day <= 31)) return '';
   const ex = D.moneyMonth(D.todayISO(), day);
-  return `Right now that's ${monthName(ex.label)}'s money: ${winLabel(ex)}.`;
+  return `Next payday: ${D.dayLabel(ex.nextPayday)}. The plan counts from the last one (${D.shortDate(ex.start)}).`;
 }
 
 function sheetPayday() {
   const f = S.form;
   return `<div class="sheet-head"><h2 class="h2" id="sheet-title">Payday</h2><button type="button" class="icon-btn" data-act="sheet-close" aria-label="Close">${icon('x', 22)}</button></div>
-    <p class="muted">The day your main pay arrives. Pay on this day covers the next month, so the plan runs from payday to the day before the next one.</p>
+    <p class="muted">The day your main pay arrives. The payday plan counts down to it. Reports, bills and closing the month use calendar months, so changing this doesn't affect them.</p>
     <div class="field"><label class="label" for="p-day">Day of the month</label><input id="p-day" name="day" class="input short" inputmode="numeric" maxlength="2" value="${esc(f.day)}" data-autofocus>${err('day')}</div>
     <p class="hint block" id="payday-preview">${paydayPreview()}</p>
     <div class="sheet-actions"><button type="button" class="btn btn-primary grow" data-act="save-payday">Save</button></div>`;
@@ -1765,8 +1766,8 @@ function sheetExpected() {
   const row = (k) => `<div class="field"><label class="label" for="x-${k}">${D.PEOPLE[k].name}${k === 'joint' ? ' (joint accounts)' : ''}</label>
     <div class="amount-wrap small"><span class="pound">£</span><input id="x-${k}" name="x_${k}" class="input bare" inputmode="decimal" value="${esc(f[`x_${k}`])}"></div>
     <span class="hint">${D.money(p.received[k] || 0)} in so far · recent average ${D.money(avg[k] || 0)}${avg.months ? ` (${avg.months} ${avg.months === 1 ? 'month' : 'months'})` : ''}</span></div>`;
-  return `<div class="sheet-head"><h2 class="h2" id="sheet-title">Pay for ${monthName(p.win.label)}</h2><button type="button" class="icon-btn" data-act="sheet-close" aria-label="Close">${icon('x', 22)}</button></div>
-    <p class="muted">How much you each expect for the whole money month (${winLabel(p.win)}). Sree's pay varies, so this starts from his recent average. Change it if you know better.</p>
+  return `<div class="sheet-head"><h2 class="h2" id="sheet-title">Pay until next payday</h2><button type="button" class="icon-btn" data-act="sheet-close" aria-label="Close">${icon('x', 22)}</button></div>
+    <p class="muted">How much you each expect from ${D.shortDate(p.win.start)} up to the next payday (${D.shortDate(p.win.nextPayday)}). Sree's pay varies, so this starts from his recent average. Change it if you know better.</p>
     ${row('sree')}${row('sha')}${S.accounts.some((a) => a.owner === 'joint' && !a.archived) ? row('joint') : ''}
     ${err('x')}
     <div class="sheet-actions"><button type="button" class="btn btn-ghost" data-act="reset-expected">Use averages</button><button type="button" class="btn btn-primary grow" data-act="save-expected">Save</button></div>`;
@@ -2231,7 +2232,7 @@ document.addEventListener('click', async (ev) => {
     case 'edit-income': { const s = D.incomeSources(true).find((x) => x.id === el.dataset.id); if (s) openSheet('income', { isNew: false, id: s.id, name: s.name, hidden: !!s.hidden, order: s.order }); break; }
     case 'i-hide': f.hidden = !f.hidden; renderSheet(); break;
     case 'save-income': saveIncome(); break;
-    case 'bills-win': S.billsOffset = Math.max(0, Math.min(2, S.billsOffset + Number(el.dataset.d))); S.billsDay = null; renderMain(); break;
+    case 'bills-win': S.billsOffset = Math.max(-1, Math.min(2, S.billsOffset + Number(el.dataset.d))); S.billsDay = null; renderMain(); break;
     case 'bills-mode': S.billsMode = el.dataset.m; S.billsDay = null; renderMain(); break;
     case 'cal-day': S.billsDay = S.billsDay === el.dataset.d ? null : el.dataset.d; renderMain(); break;
     case 'add-bill': openSheet('bill', billForm(null)); break;

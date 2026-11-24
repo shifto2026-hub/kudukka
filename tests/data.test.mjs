@@ -505,4 +505,22 @@ assert.equal(D.importDue({ id: 'amex' }, impTx, '2026-11-24'), true, 'October no
 assert.equal(D.importDue({ id: 'amex' }, impTx, '2026-11-01'), false, 'not nagged on the 1st');
 assert.equal(D.importDue({ id: 'cash' }, impTx, '2026-11-24'), false, 'never imported: no nag');
 
+// calendar-month bills: December's rent paid on 30 Nov counts for December, not twice
+const calRent = { id: 'cr', name: 'Rent', kind: 'bill', amount: 90000, freq: 'monthly', dueDay: 1, accountId: 'b', shop: 'Landlord' };
+const calTx = [t({ id: 'c1', type: 'spend', amount: 90000, date: '2026-11-30', accountId: 'b', categoryId: 'bills.rent', shop: 'Landlord' })];
+const decRows = D.billsForWindow([calRent], calTx, D.calendarWindow('2026-12'), '2026-12-03');
+assert.equal(decRows[0].status, 'paid', 'paid a day early still counts');
+assert.equal(D.calendarWindow('2026-02').end, '2026-02-28');
+const lateRent = { ...calRent, dueDay: 20 };
+assert.equal(D.billsForWindow([lateRent], calTx, D.calendarWindow('2026-12'), '2026-12-25')[0].status, 'late', 'a payment weeks earlier does not count');
+// pay from the payday onwards, for the report note
+const payTx = [
+  t({ id: 'p1', type: 'income', amount: 200000, date: '2026-11-25', accountId: 'b', categoryId: 'income.sha' }),
+  t({ id: 'p2', type: 'income', amount: 30000, date: '2026-11-10', accountId: 's', categoryId: 'income.sree' }),
+  t({ id: 'p3', type: 'income', amount: 40000, date: '2026-11-28', accountId: 's', categoryId: 'income.sree' }),
+];
+assert.deepEqual(D.payFromPayday(payTx, rAcc, '2026-11', 'home', 25), { amount: 240000, from: '2026-11-25' });
+assert.equal(D.payFromPayday(payTx, rAcc, '2026-11', 'sree', 25).amount, 40000);
+assert.equal(D.payFromPayday(payTx, rAcc, '2026-02', 'home', 31).from, '2026-02-28');
+
 console.log('All data and calculator tests passed');

@@ -15,7 +15,7 @@ Hosted on GitHub Pages at https://shifto2026-hub.github.io/kudukka (repo is publ
 - Months (Phase 4): `months/{YYYY-MM}` `{ closed, closedAt, closedBy, balanceChecks: { accountId: pence as the bank shows it (owed for cards/loans) }, reportSeen }`. Entries in a closed month can't be saved or deleted until it's reopened.
 - Category subs may carry `need` (bool) for the 50/30/20 report; missing → `defaultNeed()` in `js/data.js`.
 - Imported entries (Phase 5) carry `source: 'import'` and `importAccount` (the account whose file they came from). Accounts store `importedTo` (last date of the latest file) and `importedAt`; see `importedTo()` / `importDue()` in `js/data.js`. Import keeps only date, cleaned shop name and amount: `cleanShop()` strips sort codes and long numbers.
-- Money month: pay on the payday covers the next month (payday 25 → '2026-11' runs 25 Oct–24 Nov). Account type `loan` is debt like `credit` (negative balance, optional `apr`).
+- Months: records (entries, reports, bills screen, close the month, imports) use calendar months, so pay on 25 Nov is November income and what's left carries over (Sha's choice, 24 Nov). Only the payday plan counts payday to payday (`moneyMonth`; its label is internal and never shown as a month name). Bills count as paid up to 7 days before their due date (`billPaidIn`). Account type `loan` is debt like `credit` (negative balance, optional `apr`).
 
 ## Files
 - `js/data.js` — pure helpers (people, categories, money, dates, balances, month totals). Keep it free of Firebase so it stays testable.

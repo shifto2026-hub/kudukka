@@ -526,3 +526,5 @@ input[type="date"].input { -webkit-appearance: none; appearance: none; }
 .chip.acc-pick > span:first-child { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
 .chip.acc-pick.on .small { color: var(--cream-2); }
 .chip.acc-pick.due:not(.on) { border-color: #E9CFA3; background: #FBF2E2; }
+.pay-note { display: flex; gap: 8px; align-items: flex-start; margin: 4px 0 0; padding: 10px 12px; border-radius: 14px; background: #E4E6D5; color: var(--ink); font-size: 13px; }
+.pay-note .ic { color: var(--olive); margin-top: 2px; }

@@ -436,8 +436,16 @@ export function billExpected(bill, txns) {
 }
 export const billMonthly = (bill, txns) => (bill.freq === 'yearly' ? Math.round(billExpected(bill, txns) / 12) : billExpected(bill, txns));
 
-// Paid when a matching entry falls in the same money month (bills are often paid a few days early or late).
-export const billPaidIn = (bill, txns, win) => billPayments(bill, txns).find((t) => t.date >= win.start && t.date <= win.end) || null;
+// Paid when a matching entry falls in the window, or up to a week before the due date
+// (December's rent paid on 30 November still counts for December).
+export const billPaidIn = (bill, txns, win, due = null) => {
+  const early = due ? addDays(due, -7) : win.start;
+  const from = early < win.start ? early : win.start;
+  return billPayments(bill, txns).find((t) => t.date >= from && t.date <= win.end && (t.date >= win.start || t.date >= early)) || null;
+};
+
+// A calendar month as a window (bills and records use calendar months; only the payday plan counts payday to payday).
+export const calendarWindow = (month) => ({ label: month, start: monthStart(month), end: monthEnd(month) });
 
 // A fixed bill whose latest payment differs from its amount: the price changed.
 export function billPriceChange(bill, txns) {
@@ -452,7 +460,7 @@ export function billsForWindow(bills, txns, win, today) {
   return bills.filter((b) => !b.archived).map((b) => {
     const due = billDueIn(b, win);
     if (!due) return null;
-    const paid = billPaidIn(b, txns, win);
+    const paid = billPaidIn(b, txns, win, due);
     const expected = billExpected(b, txns);
     return {
       bill: b, due, paid, expected, amount: paid ? paid.amount : expected,
@@ -829,4 +837,19 @@ export function importDue(account, txns, today = todayISO()) {
   const to = importedTo(account, txns);
   if (!to || Number(today.slice(8)) < 2) return false;
   return to < monthEnd(shiftMonth(monthOf(today), -1));
+}
+
+// Pay that arrived on or after the payday in a calendar month: it shows as that month's income,
+// but it's mostly spent in the next month. Used for a note on the month's report.
+export function payFromPayday(txns, accounts, month, person = 'home', payday = 25) {
+  const acc = Object.fromEntries(accounts.map((a) => [a.id, a]));
+  const [y, m] = month.split('-').map(Number);
+  const from = isoOf(y, m, clampDay(y, m, payday));
+  let amount = 0;
+  for (const t of txns) {
+    if (t.type !== 'income' || t.month !== month || t.date < from) continue;
+    const a = acc[t.accountId];
+    if (a && (person === 'home' || a.owner === person)) amount += t.amount;
+  }
+  return { amount, from };
 }
