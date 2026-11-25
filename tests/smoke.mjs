@@ -453,6 +453,7 @@ const nowMonth = isoShift(0).slice(0, 7);
 const prevMonth = (() => { const [y, m] = nowMonth.split('-').map(Number); const d = new Date(y, m - 2, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; })();
 const toUK = (iso) => `${iso.slice(8)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
 const plain = (s) => s.replace(/[£,]/g, '').trim();
+const D_short = (m) => `${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][Number(m.slice(5)) - 1]} ${m.slice(0, 4)}`;
 const txt = async (sel) => (await page.locator(sel).first().textContent()) || '';
 try {
   // 1. Close card on Home for last month
@@ -725,6 +726,64 @@ try {
   await page.waitForSelector('#main .err');
   console.log('Phase 5 checks done');
 } catch (e) { errors.push(`Phase 5 stopped: ${e.message.split('\n')[0]}`); await shot('99-fail-5'); }
+// ======================= 0% card paid off over time =======================
+try {
+  const ym = (k) => { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() + k); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
+  await go('accounts');
+  await click('#main [data-act="add-account"]');
+  await click('[data-act="acc-type"][data-t="credit"]');
+  await page.fill('#a-name', 'M&S');
+  await page.fill('#a-open', '1800');
+  await click('[data-act="acc-overtime"]');
+  await page.fill('#a-promo', ym(7));
+  await page.fill('#a-apr', '24.9');
+  expect((await txt('label[for="a-apr"]')).includes('after the 0% ends'), 'APR label should explain the after-offer rate');
+  await page.waitForTimeout(250); await shot('60-card-over-time');
+  await click('[data-act="save-account"]');
+  await page.waitForTimeout(150);
+  expect((await txt('[data-act="edit-account"]:has-text("M&S")')).includes('add its direct debit'), 'over-time card should ask for its direct debit');
+  // its direct debit as a repayment
+  await go('more');
+  await click('[data-act="nav"][data-v="bills"]');
+  await click('[data-act="add-bill"]');
+  await click('[data-act="bill-kind"][data-k="repayment"]');
+  await page.fill('#b-name', 'M&S direct debit');
+  await page.fill('#b-amount', '100');
+  await page.fill('#b-day', '15');
+  await click('[data-act="pick-account"][data-field="accountId"]:has-text("Monzo")');
+  await click('[data-act="pick-account"][data-field="toAccountId"]:has-text("M&S")');
+  await click('[data-act="save-bill"]');
+  await page.waitForTimeout(150);
+  await go('accounts');
+  expect((await txt('[data-act="edit-account"]:has-text("M&S")')).includes('direct debit is £100.00'), 'card should say the direct debit is short');
+  await shot('61-accounts-over-time');
+  // payday plan: not counted in full, a top-up suggested, shown in debts with its offer
+  await go('more');
+  await click('[data-act="nav"][data-v="plan"]');
+  await page.waitForSelector('.plan-head');
+  expect((await txt('.plan-head')).includes('M&S is paid over time'), 'plan should explain the over-time card');
+  expect((await page.textContent('.tips')).includes('extra off M&S'), 'plan should suggest topping up the 0% card');
+  expect((await page.textContent('#main')).includes(`0% until ${D_short(ym(7))}`), 'debts list should show the offer end');
+  await shot('62-plan-over-time');
+  // offer ending next month: a reminder on Home
+  await go('accounts');
+  await click('[data-act="edit-account"]:has-text("M&S")');
+  await page.fill('#a-promo', ym(1));
+  await click('[data-act="save-account"]');
+  await page.waitForTimeout(150);
+  await go('home');
+  await click('[data-act="person"][data-p="home"]');
+  expect((await txt('.promo-card')).includes('0% ends'), 'Home should remind that the 0% ends soon');
+  await shot('63-home-promo');
+  // switching it off makes it a normal card again
+  await go('accounts');
+  await click('[data-act="edit-account"]:has-text("M&S")');
+  await click('[data-act="acc-overtime"]');
+  expect(await page.locator('#a-promo').count() === 0, 'month box should hide when switched off');
+  await click('.sheet-head [data-act="sheet-close"]');
+  console.log('0% card checks done');
+} catch (e) { errors.push(`0% card stopped: ${e.message.split('\n')[0]}`); await shot('99-fail-promo'); }
+
 console.log('Home "left" figure:', big.trim());
 console.log(errors.length ? `ERRORS:\n${errors.join('\n')}` : 'No errors');
 await browser.close();

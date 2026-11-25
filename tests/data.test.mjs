@@ -523,4 +523,43 @@ assert.deepEqual(D.payFromPayday(payTx, rAcc, '2026-11', 'home', 25), { amount: 
 assert.equal(D.payFromPayday(payTx, rAcc, '2026-11', 'sree', 25).amount, 40000);
 assert.equal(D.payFromPayday(payTx, rAcc, '2026-02', 'home', 31).from, '2026-02-28');
 
+// cards paid off over time (0% offer)
+const msAcc = [
+  { id: 'cur', owner: 'sha', type: 'current', openingBalance: 300000, openingDate: '2026-01-01' },
+  { id: 'ms', name: 'M&S', owner: 'sha', type: 'credit', overTime: true, promoUntil: '2027-06', apr: 24.9, openingBalance: -180000, openingDate: '2026-01-01' },
+  { id: 'amx', name: 'Amex', owner: 'sha', type: 'credit', openingBalance: -20000, openingDate: '2026-01-01' },
+  { id: 'car', name: 'Car finance', owner: 'sree', type: 'loan', apr: 9.9, openingBalance: -500000, openingDate: '2026-01-01' },
+];
+const msBills = [
+  { id: 'msdd', name: 'M&S direct debit', kind: 'repayment', amount: 10000, freq: 'monthly', dueDay: 15, accountId: 'cur', toAccountId: 'ms' },
+  { id: 'cardd', name: 'Car finance', kind: 'repayment', amount: 25000, freq: 'monthly', dueDay: 28, accountId: 'cur', toAccountId: 'car' },
+];
+assert.equal(D.isOverTime(msAcc[1]), true);
+assert.equal(D.isOverTime(msAcc[2]), false);
+assert.equal(D.aprNow(msAcc[1], '2026-11-20'), 0, '0% during the offer');
+assert.equal(D.aprNow(msAcc[1], '2027-07-01'), 24.9, 'normal rate after it');
+let ps = D.promoStatus(msAcc[1], [], msBills, '2026-11-20');
+assert.deepEqual([ps.owed, ps.monthsLeft, ps.needed, ps.payment, ps.short, ps.state], [180000, 8, 22500, 10000, 12500, 'short']);
+// paying this month's direct debit doesn't move this month's target
+const msPaid = [t({ id: 'm1', type: 'transfer', amount: 10000, date: '2026-11-15', accountId: 'cur', toAccountId: 'ms' })];
+ps = D.promoStatus(msAcc[1], msPaid, msBills, '2026-11-20');
+assert.deepEqual([ps.owed, ps.needed, ps.short], [170000, 22500, 12500]);
+assert.equal(D.promoStatus({ ...msAcc[1], promoUntil: '2026-10' }, [], msBills, '2026-11-20').state, 'ended');
+assert.equal(D.promoStatus(msAcc[1], [], [{ ...msBills[0], amount: 90000 }], '2027-05-10').state, 'soon');
+assert.equal(D.promoStatus(msAcc[1], [], [{ ...msBills[0], amount: 30000 }], '2026-11-20').state, 'ok');
+assert.equal(D.promoStatus(msAcc[2], [], msBills), null, 'cleared-in-full cards have no offer');
+// debts list: the 0% card sorts after the loan; after the offer ends it charges interest and goes first
+assert.deepEqual(D.debtsList(msAcc, [], msBills, '2026-11-20').map((d) => d.account.id), ['car', 'amx', 'ms']);
+assert.deepEqual(D.debtsList(msAcc, [], msBills, '2027-07-05').map((d) => d.account.id)[0], 'ms');
+// the payday plan: only Amex counted in full; M&S counts its direct debit as a bill; top-up suggested before loan extra
+const msPlan = D.paydayPlan({ txns: [], accounts: msAcc, bills: msBills, today: '2026-11-03', payday: 25 });
+assert.equal(msPlan.cardsOwed, 20000, 'the 0% card is not counted as cleared this month');
+assert.equal(msPlan.billsDue, 35000, 'M&S and car finance repayments are bills');
+assert.equal(msPlan.free, 300000 - 35000 - 20000);
+const kinds = msPlan.suggestions.map((x) => x.kind);
+assert.ok(kinds.indexOf('promo') >= 0 && kinds.indexOf('promo') < kinds.indexOf('debt'), `promo before debt: ${kinds}`);
+assert.equal(msPlan.suggestions.find((x) => x.kind === 'promo').amount, 12500);
+assert.equal(msPlan.suggestions.find((x) => x.kind === 'debt').debt.account.id, 'car');
+assert.deepEqual(msPlan.overTime.map((d) => d.account.id), ['ms']);
+
 console.log('All data and calculator tests passed');

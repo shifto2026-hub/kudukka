@@ -549,6 +549,33 @@ export function weeklySpending(txns, bills, today, weeks = 12) {
   return Math.round(list.reduce((n, t) => n + t.amount, 0) / span);
 }
 
+// ---------- cards paid off over time (e.g. a 0% purchase offer) ----------
+// A credit card with `overTime: true` isn't cleared each month: only its repayment is counted,
+// like a loan. `promoUntil` (YYYY-MM) is the last month of the 0% offer; `apr` is the rate after it.
+export const isOverTime = (a) => !!a && a.type === 'credit' && !!a.overTime;
+export const inPromo = (a, today = todayISO()) => isOverTime(a) && !!a.promoUntil && a.promoUntil >= monthOf(today);
+// The rate charged now: 0 during the offer, otherwise the account's APR.
+export const aprNow = (a, today = todayISO()) => (inPromo(a, today) ? 0 : Number(a.apr) || 0);
+
+// How the offer is going: what's owed, months left, the monthly amount that clears it in time,
+// and whether the repayment set up in Bills is enough.
+export function promoStatus(account, txns, bills, today = todayISO()) {
+  if (!isOverTime(account)) return null;
+  const owed = Math.max(0, -balanceOf(account, txns));
+  const rep = bills.find((b) => !b.archived && b.kind === 'repayment' && b.toAccountId === account.id);
+  const payment = rep ? billExpected(rep, txns) : null;
+  if (!account.promoUntil) return { owed, payment, until: null, monthsLeft: null, needed: null, short: 0, state: owed ? 'nodate' : 'clear' };
+  const month = monthOf(today);
+  const monthsLeft = monthsBetween(month, account.promoUntil);
+  if (!owed) return { owed, payment, until: account.promoUntil, monthsLeft, needed: 0, short: 0, state: 'clear' };
+  if (monthsLeft < 1) return { owed, payment, until: account.promoUntil, monthsLeft: 0, needed: null, short: 0, state: 'ended' };
+  // Payments already made this month count towards this month's share.
+  const paidThisMonth = rep ? billPayments(rep, txns).filter((t) => monthOf(t.date) === month).reduce((n, t) => n + t.amount, 0) : 0;
+  const needed = Math.ceil((owed + paidThisMonth) / monthsLeft);
+  const short = payment === null ? needed : Math.max(0, needed - payment);
+  return { owed, payment, until: account.promoUntil, monthsLeft, needed, short, state: short > 0 ? 'short' : monthsLeft <= 2 ? 'soon' : 'ok' };
+}
+
 // Months to clear a debt at a monthly payment and yearly interest rate; null if it never clears.
 export function monthsToClear(owed, monthlyPayment, apr = 0) {
   if (!owed || owed <= 0) return 0;
@@ -559,12 +586,13 @@ export function monthsToClear(owed, monthlyPayment, apr = 0) {
   return Math.ceil(-Math.log(1 - (r * owed) / monthlyPayment) / Math.log(1 + r));
 }
 
-export function debtsList(accounts, txns, bills) {
+export function debtsList(accounts, txns, bills, today = todayISO()) {
   return accounts.filter((a) => !a.archived && isDebt(a)).map((a) => {
     const owed = Math.max(0, -balanceOf(a, txns));
     const rep = bills.find((b) => !b.archived && b.kind === 'repayment' && b.toAccountId === a.id);
     const payment = rep ? billExpected(rep, txns) : null;
-    return { account: a, owed, apr: Number(a.apr) || 0, payment, months: payment ? monthsToClear(owed, payment, a.apr) : null };
+    const apr = aprNow(a, today);
+    return { account: a, owed, apr, payment, months: payment ? monthsToClear(owed, payment, apr) : null, promo: promoStatus(a, txns, bills, today) };
   }).filter((d) => d.owed > 0)
     // Highest interest first; equal rates → smallest balance first.
     .sort((x, y) => y.apr - x.apr || x.owed - y.owed);
@@ -603,9 +631,11 @@ export function paydayPlan({ txns, accounts, bills = [], today = todayISO(), pay
 
   const winBills = billsForWindow(bills, txns, win, today);
   // Card balances are counted in full below, so repayment bills to cards aren't counted twice.
-  const unpaid = winBills.filter((b) => !b.paid && !(b.bill.kind === 'repayment' && accById[b.bill.toAccountId] && accById[b.bill.toAccountId].type === 'credit'));
+  // Cards paid off over time are the exception: their repayment is a bill, like a loan's.
+  const clearedCard = (id) => accById[id] && accById[id].type === 'credit' && !isOverTime(accById[id]);
+  const unpaid = winBills.filter((b) => !b.paid && !(b.bill.kind === 'repayment' && clearedCard(b.bill.toAccountId)));
   const billsDue = unpaid.reduce((n, b) => n + b.expected, 0);
-  const cards = live.filter((a) => a.type === 'credit').map((a) => ({ account: a, owed: Math.max(0, -balanceOf(a, txns)) })).filter((c) => c.owed > 0);
+  const cards = live.filter((a) => a.type === 'credit' && !isOverTime(a)).map((a) => ({ account: a, owed: Math.max(0, -balanceOf(a, txns)) })).filter((c) => c.owed > 0);
   const cardsOwed = cards.reduce((n, c) => n + c.owed, 0);
   const free = have + coming - billsDue - cardsOwed;
 
@@ -614,7 +644,12 @@ export function paydayPlan({ txns, accounts, bills = [], today = todayISO(), pay
   const typicalWeek = weeklySpending(txns, bills, today);
   const essentials = bills.filter((b) => !b.archived && b.kind !== 'repayment').reduce((n, b) => n + billMonthly(b, txns), 0);
   const emergencyTarget = Math.max(STARTER_EMERGENCY, essentials * 3);
-  const debts = debtsList(accounts, txns, bills).filter((d) => d.account.type === 'loan');
+  const allDebts = debtsList(accounts, txns, bills, today);
+  // Extra payments go to debts charging interest: loans, and over-time cards once their 0% has ended.
+  const debts = allDebts.filter((d) => (d.account.type === 'loan' || isOverTime(d.account)) && d.apr > 0);
+  // A 0% offer that the repayment won't clear in time: top it up first, before the interest-free days run out.
+  const promoShort = allDebts.filter((d) => d.promo && d.promo.state === 'short');
+  const overTime = allDebts.filter((d) => d.promo);
 
   const suggestions = [];
   let left = free;
@@ -628,6 +663,12 @@ export function paydayPlan({ txns, accounts, bills = [], today = todayISO(), pay
       // Below the £1,000 starter: fill that first. Above it: half of what's left, up to the target.
       const put = saved < STARTER_EMERGENCY ? Math.min(left, STARTER_EMERGENCY - saved) : Math.min(Math.round(left / 2), emergencyTarget - saved);
       if (put > 0) { suggestions.push({ kind: 'emergency', amount: put, saved, target: emergencyTarget }); left -= put; }
+    }
+    for (const d of promoShort) {
+      if (left <= 0) break;
+      const put = Math.min(left, d.promo.short);
+      suggestions.push({ kind: 'promo', amount: put, debt: d });
+      left -= put;
     }
     if (left > 0 && debts.length) {
       const d = debts[0];
@@ -643,7 +684,7 @@ export function paydayPlan({ txns, accounts, bills = [], today = todayISO(), pay
   const spendTip = suggestions.find((s) => s.kind === 'spend');
   return {
     win, today, have, saved, expected, received, comingBy, coming, winBills, unpaid, billsDue, cards, cardsOwed, free,
-    daysLeft, weeksLeft, typicalWeek, essentials, emergencyTarget, debts, suggestions,
+    daysLeft, weeksLeft, typicalWeek, essentials, emergencyTarget, debts, overTime, suggestions,
     safePerWeek: spendTip ? spendTip.perWeek : 0,
     guard: debitGuard(accounts, txns, winBills),
   };

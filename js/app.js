@@ -394,7 +394,7 @@ function viewHome() {
   const moved = S.person !== 'home' && (s.movedIn || s.movedOut)
     ? `<p class="moved">${s.movedOut ? `Moved to ${S.person === 'sree' ? 'Sha' : 'Sree'}: <b>${D.money(s.movedOut)}</b>` : ''}${s.movedIn && s.movedOut ? ' · ' : ''}${s.movedIn ? `Received from ${S.person === 'sree' ? 'Sha' : 'Sree'}: <b>${D.money(s.movedIn)}</b>` : ''}</p>`
     : '';
-  return `${monthPill()}${personSwitch()}${planCards()}${closeCard()}${flagCard()}${tripCard()}
+  return `${monthPill()}${personSwitch()}${planCards()}${promoCards()}${closeCard()}${flagCard()}${tripCard()}
     <section class="card hero">
       <span class="muted small">${label}</span>
       <span class="big" style="color:${accent}">${D.money(s.left)}</span>
@@ -521,6 +521,17 @@ function importLine(a) {
   return `<span class="entry-sub imp-line${due ? ' due' : ''}">${icon('upload', 11)} Imported to ${D.shortDate(to)}${to.slice(0, 4) !== D.todayISO().slice(0, 4) ? ` ${to.slice(0, 4)}` : ''}${due ? ' · last month to import' : ''}</span>`;
 }
 
+// One line about a card being paid off over time: on track, short, ending soon or ended.
+function promoLine(ps, a) {
+  if (!ps || !ps.owed) return '';
+  const until = ps.until ? D.monthShort(ps.until) : '';
+  if (ps.state === 'nodate') return `<span class="entry-sub">${icon('clock', 12)} Paying over time · add the month the 0% ends</span>`;
+  if (ps.state === 'ended') return `<span class="entry-sub warn-text">${icon('alert', 12)} 0% ended ${until}${a.apr ? ` · ${a.apr}% now` : ''} · clear it first</span>`;
+  if (ps.payment === null) return `<span class="entry-sub warn-text">0% until ${until} · ${D.money(ps.needed)} a month clears it · add its direct debit in Bills</span>`;
+  if (ps.state === 'short') return `<span class="entry-sub warn-text">${icon('alert', 12)} 0% until ${until} · needs ${D.money(ps.needed)} a month, direct debit is ${D.money(ps.payment)}</span>`;
+  return `<span class="entry-sub ok-text">${icon('check', 12)} 0% until ${until} · ${D.money(ps.payment)} a month clears it in time</span>`;
+}
+
 function viewAccounts() {
   const show = (a) => (S.person === 'home' || a.owner === S.person) && (S.showArchived || !a.archived);
   const accs = S.accounts.filter(show);
@@ -551,7 +562,8 @@ function viewAccounts() {
         <span class="entry-sub">${D.PEOPLE[a.owner].name}${a.dueDay ? ` · Due on the ${ordinal(a.dueDay)}` : ''}</span>${importLine(a)}</span>
         <span class="entry-amt"><span class="small muted block">${credit ? 'In credit' : 'Owed'}</span>${D.money(credit || owed)}</span>
       </span>
-      ${a.creditLimit ? `<span class="bar thin full"><span style="width:${pct}%;background:${pct > 80 ? 'var(--warn)' : 'var(--rust)'}"></span></span><span class="entry-sub">${D.money(owed)} of ${D.money(a.creditLimit)} limit${a.apr ? ` · ${a.apr}% APR` : ''}</span>` : ''}
+      ${a.creditLimit ? `<span class="bar thin full"><span style="width:${pct}%;background:${pct > 80 ? 'var(--warn)' : 'var(--rust)'}"></span></span><span class="entry-sub">${D.money(owed)} of ${D.money(a.creditLimit)} limit${a.apr && !D.isOverTime(a) ? ` · ${a.apr}% APR` : ''}</span>` : ''}
+      ${D.isOverTime(a) ? promoLine(D.promoStatus(a, S.txns, S.bills), a) : ''}
     </button></li>`;
   };
   const loanRow = (a) => {
@@ -719,6 +731,7 @@ function suggestionCard(s, i, p) {
   if (s.kind === 'short') return `<li class="card tip warn-card">${n}<div><b>You're ${D.money(s.amount)} short before payday</b><span class="muted small">Move money from savings, or hold off on extras until ${D.shortDate(p.win.nextPayday)}.</span></div></li>`;
   if (s.kind === 'spend') return `<li class="card tip">${n}<div><b>Keep ${D.money(s.amount)} for everyday spending</b><span class="muted small">About ${D.money(s.perWeek)} a week until payday${s.typicalWeek ? `, close to your usual ${D.money(s.typicalWeek)}` : ''}.</span></div></li>`;
   if (s.kind === 'emergency') return `<li class="card tip">${n}<div><b>Put ${D.money(s.amount)} into savings</b><span class="muted small">Emergency fund: ${D.money(s.saved)} of ${D.money(s.target)}${s.saved < D.STARTER_EMERGENCY ? '. First aim: £1,000 for small shocks' : ' (3 months of bills)'}.</span></div></li>`;
+  if (s.kind === 'promo') return `<li class="card tip warn-card">${n}<div><b>Pay ${D.money(s.amount)} extra off ${esc(s.debt.account.name)}</b><span class="muted small">Its 0% ends ${D.monthShort(s.debt.promo.until)}. It needs ${D.money(s.debt.promo.needed)} a month to be clear by then; the direct debit is ${D.money(s.debt.promo.payment || 0)}.${s.debt.account.apr ? ` After that it's ${s.debt.account.apr}%.` : ''}</span></div></li>`;
   if (s.kind === 'debt') return `<li class="card tip">${n}<div><b>Pay ${D.money(s.amount)} extra off ${esc(s.debt.account.name)}</b><span class="muted small">${s.debt.apr ? `${s.debt.apr}% interest, the highest you have` : 'Your loan'}${s.monthsSooner ? `. Debt-free about ${s.monthsSooner} ${s.monthsSooner === 1 ? 'month' : 'months'} sooner` : ''}.</span></div></li>`;
   const pp = D.potsPlan(S.pots, S.potMoves, s.amount);
   if (pp.length) {
@@ -750,7 +763,8 @@ function viewPlan() {
         <li><button type="button" class="link-row" data-act="open-expected"><span>Pay still to come ${icon('edit', 13)}</span><b>+${D.money(p.coming)}</b></button>
           ${who.length ? `<span class="muted small">${who.map((k) => ((ex[k] || 0) > (p.received[k] || 0) ? `${D.PEOPLE[k].name}: ${D.money(p.received[k] || 0)} in of ~${D.money(ex[k])}` : `${D.PEOPLE[k].name}: ${D.money(p.received[k] || 0)} in`)).join(' · ')}</span>` : '<span class="muted small">Enter pay as Income, or tap to set what you expect</span>'}</li>
         <li><button type="button" class="link-row" data-act="nav" data-v="bills"><span>Bills still due before payday</span><b>−${D.money(p.billsDue)}</b></button></li>
-        <li><span>Credit card balances</span><b>−${D.money(p.cardsOwed)}</b></li>
+        <li><span>Credit cards to clear in full</span><b>−${D.money(p.cardsOwed)}</b>
+          ${p.overTime.length ? `<span class="muted small">${p.overTime.map((d) => esc(d.account.name)).join(', ')} ${p.overTime.length === 1 ? 'is' : 'are'} paid over time: only the monthly payment counts, in bills.</span>` : ''}</li>
       </ul>
       ${p.saved ? `<span class="muted small">Not counted: ${D.money(p.saved)} in savings.</span>` : ''}
     </section>
@@ -768,8 +782,18 @@ function viewPlan() {
     ${debts.length ? `<h2 class="h3 pad">Debts, highest interest first</h2>
       <ul class="entries card tight wrap">${debts.map((d) => `<li><button type="button" class="entry" data-act="edit-account" data-id="${d.account.id}">
         <span class="gicon" style="background:${D.PEOPLE[d.account.owner].color};color:${D.PEOPLE[d.account.owner].ink}">${icon(d.account.type === 'loan' ? 'loan' : 'card', 18)}</span>
-        <span class="entry-main"><span class="entry-title">${esc(d.account.name)}</span><span class="entry-sub">${d.apr ? `${d.apr}% APR` : 'No rate set'}${d.months ? ` · debt-free ${D.monthShort(D.shiftMonth(D.currentMonth(), d.months))}` : ''}</span></span>
+        <span class="entry-main"><span class="entry-title">${esc(d.account.name)}</span><span class="entry-sub">${d.promo && d.promo.state !== 'ended' && d.promo.until ? `0% until ${D.monthShort(d.promo.until)}` : d.apr ? `${d.apr}% APR` : d.promo ? '0%' : 'No rate set'}${d.months ? ` · debt-free ${D.monthShort(D.shiftMonth(D.currentMonth(), d.months))}` : ''}</span>${d.promo ? promoLine(d.promo, d.account) : ''}</span>
         <span class="entry-amt">${D.money(d.owed)}</span></button></li>`).join('')}</ul>` : ''}`;
+}
+
+// Home: a 0% offer ending within two months, or ended with money still owed.
+function promoCards() {
+  if (S.person !== 'home') return '';
+  return currentPlan().overTime.filter((d) => d.promo && d.promo.owed && (d.promo.state === 'ended' || d.promo.monthsLeft <= 2)).map((d) => `
+    <button type="button" class="card flag-card promo-card" data-act="nav" data-v="plan">
+      <span class="gicon warn">${icon('alert', 18)}</span>
+      <span class="entry-main"><span class="entry-title">${esc(d.account.name)}: ${d.promo.state === 'ended' ? '0% has ended' : `0% ends ${D.monthShort(d.promo.until)}`}</span>
+      <span class="entry-sub">${D.money(d.promo.owed)} left${d.promo.state === 'ended' ? (d.account.apr ? ` · ${d.account.apr}% now` : '') : ` · ${D.money(d.promo.needed)} a month clears it`}</span></span>${icon('right', 18)}</button>`).join('');
 }
 
 function planCards() {
@@ -1533,7 +1557,7 @@ function newAccountForm() {
   const role = myRole();
   return {
     isNew: true, id: fb.newId('accounts'), name: '', bank: '', owner: S.person !== 'home' ? S.person : role || 'sha',
-    type: 'current', openingText: '', openingDate: D.monthStart(S.month), limitText: '', last4: '', dueDay: '', checkText: '', aprText: '',
+    type: 'current', openingText: '', openingDate: D.monthStart(S.month), limitText: '', last4: '', dueDay: '', checkText: '', aprText: '', overTime: false, promoUntil: '',
   };
 }
 function editAccountForm(a) {
@@ -1542,7 +1566,7 @@ function editAccountForm(a) {
     isNew: false, id: a.id, name: a.name || '', bank: a.bank || '', owner: a.owner, type: a.type,
     openingText: (ob / 100).toFixed(2).replace(/\.00$/, ''), openingDate: a.openingDate || D.monthStart(S.month),
     limitText: a.creditLimit ? String(a.creditLimit / 100) : '', last4: a.last4 || '', dueDay: a.dueDay ? String(a.dueDay) : '',
-    checkText: '', archived: !!a.archived, aprText: a.apr ? String(a.apr) : '',
+    checkText: '', archived: !!a.archived, aprText: a.apr ? String(a.apr) : '', overTime: !!a.overTime, promoUntil: a.promoUntil || '',
   };
 }
 
@@ -1583,8 +1607,11 @@ function sheetAccount() {
       <div><label class="label" for="a-last4">Last 4 digits</label><input id="a-last4" name="last4" class="input" inputmode="numeric" maxlength="4" placeholder="Optional" value="${esc(f.last4)}"></div>
       <div><label class="label" for="a-due">Due day</label><input id="a-due" name="dueDay" class="input" inputmode="numeric" maxlength="2" placeholder="1–31" value="${esc(f.dueDay)}"></div>
     </div>${err('last4')}${err('dueDay')}` : ''}
-    ${isOwed ? `<div class="field"><label class="label" for="a-apr">Interest rate (APR %)</label><input id="a-apr" name="aprText" class="input" inputmode="decimal" maxlength="6" placeholder="Optional, e.g. 9.9" value="${esc(f.aprText)}">
-      <p class="hint">${f.type === 'loan' ? 'Used to work out your debt-free date. Add the monthly repayment in Bills.' : 'Helps Kudukka suggest which debt to clear first.'}</p>${err('apr')}</div>` : ''}
+    ${isCard ? `<button type="button" class="toggle-row" data-act="acc-overtime" aria-pressed="${!!f.overTime}"><span class="entry-main"><span class="entry-title">Paying this off over time</span><span class="entry-sub">For a 0% offer or a big purchase you clear bit by bit. Kudukka then counts only its monthly payment, not the whole balance.</span></span><span class="switch${f.overTime ? ' on' : ''}" aria-hidden="true"></span></button>` : ''}
+    ${isCard && f.overTime ? `<div class="field"><label class="label" for="a-promo">0% until (last month of the offer)</label><input id="a-promo" name="promoUntil" type="month" class="input" value="${esc(f.promoUntil)}">
+      <p class="hint">On your statement as the promotional rate end date. Add the monthly direct debit in Bills as a repayment to this card.</p>${err('promoUntil')}</div>` : ''}
+    ${isOwed ? `<div class="field"><label class="label" for="a-apr">${isCard && f.overTime ? 'Rate after the 0% ends (APR %)' : 'Interest rate (APR %)'}</label><input id="a-apr" name="aprText" class="input" inputmode="decimal" maxlength="6" placeholder="Optional, e.g. ${isCard && f.overTime ? '24.9' : '9.9'}" value="${esc(f.aprText)}">
+      <p class="hint">${f.type === 'loan' ? 'Used to work out your debt-free date. Add the monthly repayment in Bills.' : isCard && f.overTime ? 'What the card charges once the offer ends: shows why clearing it in time matters.' : 'Helps Kudukka suggest which debt to clear first.'}</p>${err('apr')}</div>` : ''}
     ${f.isNew ? '' : `<div class="field check">
       <label class="label" for="a-check">Check against your bank</label>
       <div class="amount-wrap small"><span class="pound">£</span><input id="a-check" name="checkText" class="input bare" inputmode="decimal" placeholder="${isOwed ? 'Owed now, from your bank app' : 'Balance now, from your bank app'}" value="${esc(f.checkText)}"></div>
@@ -1612,6 +1639,7 @@ function saveAccount() {
   if (f.dueDay && !(due >= 1 && due <= 31)) e.dueDay = 'Due day should be 1 to 31.';
   const apr = f.aprText ? Number(String(f.aprText).replace('%', '')) : null;
   if (f.aprText && !(apr >= 0 && apr < 100)) e.apr = 'Enter the rate as a number, like 9.9.';
+  if (f.type === 'credit' && f.overTime && f.promoUntil && !/^\d{4}-\d{2}$/.test(f.promoUntil)) e.promoUntil = 'Choose the month the offer ends.';
   S.errors = e;
   if (Object.keys(e).length) { renderSheet(); return; }
   const isCard = f.type === 'credit';
@@ -1624,6 +1652,8 @@ function saveAccount() {
     creditLimit: isCard && limit ? limit : null,
     last4: isCard ? f.last4 || '' : '',
     dueDay: isCard && due ? due : null,
+    overTime: isCard && !!f.overTime,
+    promoUntil: isCard && f.overTime && f.promoUntil ? f.promoUntil : null,
   };
   if (f.isNew) { data.archived = false; data.order = Date.now(); }
   const { isNew, id } = f;
@@ -2535,6 +2565,7 @@ document.addEventListener('click', async (ev) => {
     case 'edit-account': { const a = accountById(el.dataset.id); if (a) openSheet('account', editAccountForm(a)); break; }
     case 'acc-owner': f.owner = el.dataset.o; renderSheet(); break;
     case 'acc-type': f.type = el.dataset.t; renderSheet(); break;
+    case 'acc-overtime': f.overTime = !f.overTime; delete S.errors.promoUntil; renderSheet(); break;
     case 'save-account': saveAccount(); break;
     case 'add-adjust': addAdjustment(Number(el.dataset.diff)); break;
     case 'archive-account': {
